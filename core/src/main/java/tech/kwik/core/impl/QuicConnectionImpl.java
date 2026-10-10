@@ -481,7 +481,13 @@ public abstract class QuicConnectionImpl implements QuicConnection, PacketProces
      */
     public void abandonPath(long pathId, long errorCode) {
         PathManager manager = pathManager;
-        if (manager == null || pathId == 0 || manager.isAbandoned(pathId)) {
+        if (manager == null || manager.isAbandoned(pathId)) {
+            return;
+        }
+        if (pathId == 0) {
+            if (getSender().hasOtherPath(0)) {
+                abandonInitialPath();
+            }
             return;
         }
         // Local connection IDs stay registered for three PTOs, so late packets on the path are not answered with
@@ -490,6 +496,23 @@ public abstract class QuicConnectionImpl implements QuicConnection, PacketProces
         send(new PathAbandonFrame(pathId, errorCode), this::retransmitPathAbandon);
         getSender().removePath(pathId);
         getSender().flush();
+        if (getSender().isInitialPathAbandoned() && getSender().getPaths().isEmpty()) {
+            immediateCloseWithError(NO_ERROR.value, "all paths abandoned");
+        }
+    }
+
+    /**
+     * Abandons the initial path while other paths remain: PATH_ABANDON (once) and no more packets on path 0.
+     */
+    private synchronized void abandonInitialPath() {
+        if (getSender().isInitialPathAbandoned()) {
+            return;
+        }
+        pathManager.abandon(0, null, 0);
+        getSender().abandonInitialPath();
+        send(new PathAbandonFrame(0, NO_ERROR.value), this::retransmitPathAbandon);
+        getSender().flush();
+        log.info("Initial path abandoned; continuing on the other paths");
     }
 
     private void retransmitPathAbandon(QuicFrame frame) {
@@ -638,10 +661,15 @@ public abstract class QuicConnectionImpl implements QuicConnection, PacketProces
             return;
         }
         if (forInitialPath(pathId)) {
-            // https://www.ietf.org/archive/id/draft-ietf-quic-multipath-21.html#section-3.4
-            // "If a PATH_ABANDON frame is received for the only open path of a QUIC connection, the receiving peer
-            //  SHOULD send a CONNECTION_CLOSE frame and enter the closing state."
-            immediateCloseWithError(NO_ERROR.value, "peer abandoned the only path");
+            if (isMultipathEnabled() && getSender().hasOtherPath(0)) {
+                abandonInitialPath();
+            }
+            else {
+                // https://www.ietf.org/archive/id/draft-ietf-quic-multipath-21.html#section-3.4
+                // "If a PATH_ABANDON frame is received for the only open path of a QUIC connection, the receiving peer
+                //  SHOULD send a CONNECTION_CLOSE frame and enter the closing state."
+                immediateCloseWithError(NO_ERROR.value, "peer abandoned the only path");
+            }
         }
     }
 

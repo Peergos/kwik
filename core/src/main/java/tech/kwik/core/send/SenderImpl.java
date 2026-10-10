@@ -140,6 +140,7 @@ public class SenderImpl implements Sender, CongestionControlEventListener, Hands
     private final Map<Long, QuicPath> paths = new ConcurrentHashMap<>();
     private final java.util.Queue<Long> probeTimeouts = new java.util.concurrent.ConcurrentLinkedQueue<>();
     private volatile boolean initialPathSuspect;
+    private volatile boolean initialPathAbandoned;
     private byte[] batchBuffer;
     private final MtuDiscovery mtuDiscovery;
     private final VersionHolder version;
@@ -284,12 +285,34 @@ public class SenderImpl implements Sender, CongestionControlEventListener, Hands
         return paths.values();
     }
 
+    /**
+     * Stops using the initial path (path 0), which was abandoned while other paths remain: what was in flight on it
+     * is retransmitted on the other paths.
+     */
+    public void abandonInitialPath() {
+        initialPathAbandoned = true;
+        sendRequestQueue[EncryptionLevel.App.ordinal()].setSharedEnabled(false);
+        recoveryManager.declareAllLost(PnSpace.App);
+        wakeUpSenderLoop();
+    }
+
+    public boolean isInitialPathAbandoned() {
+        return initialPathAbandoned;
+    }
+
+    /**
+     * Whether a path other than path 0 and the given one is active or still being validated.
+     */
+    public boolean hasOtherPath(long except) {
+        return paths.values().stream().anyMatch(p -> p.getId() != except && p.getState() != QuicPath.State.ABANDONED);
+    }
+
     public void removePath(long id) {
         QuicPath path = paths.remove(id);
         if (path != null) {
             path.setState(QuicPath.State.ABANDONED);
             path.getRecoveryManager().abandon();
-            if (paths.isEmpty()) {
+            if (paths.isEmpty() && !initialPathAbandoned) {
                 // Path 0 is the only path again.
                 initialPathSuspect = false;
                 sendRequestQueue[EncryptionLevel.App.ordinal()].setSharedEnabled(true);
@@ -817,13 +840,18 @@ public class SenderImpl implements Sender, CongestionControlEventListener, Hands
         // frames go only on the first (best) usable path, as iroh does, so a slow path (e.g. the relay) does not hold
         // up delivery; acks and probes of a path always go on it.
         List<QuicPath> candidates = new ArrayList<>(paths.size() + 1);
-        candidates.add(null);
+        if (!initialPathAbandoned) {
+            candidates.add(null);
+        }
+        if (candidates.isEmpty() && paths.isEmpty()) {
+            return new AssembledDatagram(Collections.emptyList());
+        }
         candidates.addAll(paths.values());
         candidates.sort(Comparator.comparing((QuicPath p) -> p == null? initialPathSuspect: !(p.getState() == QuicPath.State.ACTIVE && !p.isSuspect()))
                 .thenComparing((QuicPath p) -> p != null && p.peerPrefersBackup())
                 .thenComparingInt(p -> p == null? rttEstimater.getSmoothedRtt(): p.getRttEstimator().getSmoothedRtt()));
         QuicPath best = candidates.get(0);
-        sendRequestQueue[EncryptionLevel.App.ordinal()].setSharedEnabled(best == null && !initialPathSuspect);
+        sendRequestQueue[EncryptionLevel.App.ordinal()].setSharedEnabled(best == null && !initialPathSuspect && !initialPathAbandoned);
         for (QuicPath path : paths.values()) {
             path.setCarriesData(path == best);
         }
