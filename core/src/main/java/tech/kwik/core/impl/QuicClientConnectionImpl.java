@@ -48,7 +48,14 @@ import tech.kwik.core.packet.*;
 import tech.kwik.core.receive.MultipleAddressReceiver;
 import tech.kwik.core.receive.RawPacket;
 import tech.kwik.core.send.SenderImpl;
+import tech.kwik.core.receive.QueueReceiver;
+import tech.kwik.core.receive.Receiver;
+import tech.kwik.core.server.ServerConnectionRegistry;
+import tech.kwik.core.server.impl.ServerConnectionProxy;
 import tech.kwik.core.socket.ClientSocketManager;
+import tech.kwik.core.socket.SharedEndpoint;
+import tech.kwik.core.socket.SharedEndpointSocketManager;
+import tech.kwik.core.socket.SocketManager;
 import tech.kwik.core.stream.EarlyDataStream;
 import tech.kwik.core.stream.FlowControl;
 import tech.kwik.core.stream.StreamManager;
@@ -75,6 +82,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.function.BiConsumer;
 import java.util.function.Consumer;
 import java.util.function.Predicate;
+import java.util.stream.Stream;
 import java.util.stream.Collectors;
 
 import static tech.kwik.agent15.TlsConstants.NamedGroup.*;
@@ -126,10 +134,11 @@ public class QuicClientConnectionImpl extends QuicConnectionImpl implements Quic
     private final boolean usingIPv4;
     private final QuicSessionTicket sessionTicket;
     private final TlsClientEngine tlsEngine;
-    private final ClientSocketManager socketManager;
+    private final SocketManager socketManager;
+    private final SharedEndpoint sharedEndpoint;
     private final InetAddress serverAddress;
     private final SenderImpl sender;
-    private final MultipleAddressReceiver receiver;
+    private final Receiver receiver;
     private volatile PacketParser parser;
     private final StreamManager streamManager;
     private volatile TransportParameters transportParams;
@@ -171,7 +180,7 @@ public class QuicClientConnectionImpl extends QuicConnectionImpl implements Quic
                                      List<TlsConstants.NamedGroup> keyShareGroups,
                                      List<TlsConstants.NamedGroup> supportedGroups,
                                      X509Certificate clientCertificate, PrivateKey clientCertificateKey,
-                                     DatagramSocketFactory socketFactory) throws UnknownHostException, SocketException {
+                                     DatagramSocketFactory socketFactory, SharedEndpoint sharedEndpoint) throws UnknownHostException, SocketException {
         super(originalVersion, Role.Client, secretsFile, connectionProperties, "", log);
         this.applicationProtocol = applicationProtocol;
         this.connectTimeout = connectTimeout;
@@ -198,8 +207,20 @@ public class QuicClientConnectionImpl extends QuicConnectionImpl implements Quic
         };
         connectionIdManager = new ConnectionIdManager(cidLength, connectionProperties.getActiveConnectionIdLimit(), closeWithErrorFunction, log);
 
-        receiver = new MultipleAddressReceiver(log, createPacketFilter(), this::abortConnection);
-        socketManager = new ClientSocketManager(new InetSocketAddress(serverAddress, port), receiver, socketFactory);
+        this.sharedEndpoint = sharedEndpoint;
+        if (sharedEndpoint != null) {
+            QueueReceiver queueReceiver = new QueueReceiver(log, packet ->
+                    packet.getPeerAddress().getAddress().equals(serverAddress) && packet.getPeerAddress().getPort() == serverPort);
+            receiver = queueReceiver;
+            socketManager = new SharedEndpointSocketManager(sharedEndpoint, new InetSocketAddress(serverAddress, port));
+            connectionIdManager.setConnectionRegistry(new SharedEndpointRegistry(sharedEndpoint, queueReceiver));
+            sharedEndpoint.registerConnectionId(connectionIdManager.getInitialConnectionId(), queueReceiver::deliver);
+        }
+        else {
+            MultipleAddressReceiver socketReceiver = new MultipleAddressReceiver(log, createPacketFilter(), this::abortConnection);
+            receiver = socketReceiver;
+            socketManager = new ClientSocketManager(new InetSocketAddress(serverAddress, port), socketReceiver, this.socketFactory);
+        }
         connectionIdManager.registerClientAddress(socketManager.getClientAddress());
 
         sender = new SenderImpl(quicVersion, getMaxPacketSize(), socketManager, this, "", initialRtt, log);
@@ -862,7 +883,52 @@ public class QuicClientConnectionImpl extends QuicConnectionImpl implements Quic
     @Override
     protected void postTerminateHook() {
         socketManager.close();
+        if (sharedEndpoint != null) {
+            connectionIdManager.getAllConnectionIds().values().forEach(cid -> sharedEndpoint.deregisterConnectionId(cid.getConnectionId()));
+        }
         super.postTerminateHook();
+    }
+
+    private ClientSocketManager ownSocketManager() {
+        if (socketManager instanceof ClientSocketManager) {
+            return (ClientSocketManager) socketManager;
+        }
+        throw new UnsupportedOperationException("not supported on a shared endpoint");
+    }
+
+    private static class SharedEndpointRegistry implements ServerConnectionRegistry {
+        private final SharedEndpoint endpoint;
+        private final QueueReceiver receiver;
+
+        SharedEndpointRegistry(SharedEndpoint endpoint, QueueReceiver receiver) {
+            this.endpoint = endpoint;
+            this.receiver = receiver;
+        }
+
+        @Override
+        public void registerConnection(ServerConnectionProxy connection, byte[] connectionId) {
+            endpoint.registerConnectionId(connectionId, receiver::deliver);
+        }
+
+        @Override
+        public void deregisterConnection(ServerConnectionProxy connection, byte[] connectionId) {
+            endpoint.deregisterConnectionId(connectionId);
+        }
+
+        @Override
+        public void registerAdditionalConnectionId(byte[] currentConnectionId, byte[] newConnectionId) {
+            endpoint.registerConnectionId(newConnectionId, receiver::deliver);
+        }
+
+        @Override
+        public void deregisterConnectionId(byte[] connectionId) {
+            endpoint.deregisterConnectionId(connectionId);
+        }
+
+        @Override
+        public Stream<ServerConnectionProxy> getAllConnections() {
+            return Stream.empty();
+        }
     }
 
     public void changeAddress() {
@@ -876,13 +942,13 @@ public class QuicClientConnectionImpl extends QuicConnectionImpl implements Quic
     }
 
     public void changeAddress(Integer localPort) throws SocketException {
-        int oldPort = socketManager.getLocalSocketAddress().getPort();
-        InetSocketAddress newAddress = socketManager.changeLocalAddress(localPort);
+        int oldPort = ownSocketManager().getLocalSocketAddress().getPort();
+        InetSocketAddress newAddress = ownSocketManager().changeLocalAddress(localPort);
         log.info("Changed local address to " + newAddress.getPort() + " (was: " + oldPort + ")");
     }
 
     public void addLocalAddress(Integer localPort) throws SocketException {
-        InetSocketAddress newAddress = socketManager.addLocalAddress(localPort);
+        InetSocketAddress newAddress = ownSocketManager().addLocalAddress(localPort);
         log.info("Added local address " + newAddress.getPort());
     }
 
@@ -899,11 +965,11 @@ public class QuicClientConnectionImpl extends QuicConnectionImpl implements Quic
             send(pathChallengeFrame, f -> {}, true);
         }
         else {
-            if (socketManager.getAlternateClientAddress() == null) {
+            if (ownSocketManager().getAlternateClientAddress() == null) {
                 log.warn("Cannot send path challenge to alternate address, because it is not set");
                 return;
             }
-            getSender().sendAlternateAddress(pathChallengeFrame, socketManager.getAlternateClientAddress());
+            getSender().sendAlternateAddress(pathChallengeFrame, ownSocketManager().getAlternateClientAddress());
         }
     }
 
@@ -1318,7 +1384,7 @@ public class QuicClientConnectionImpl extends QuicConnectionImpl implements Quic
 
     @Override
     public InetSocketAddress getLocalAddress() {
-        return socketManager.getLocalSocketAddress();
+        return sharedEndpoint != null? sharedEndpoint.getLocalAddress(): ownSocketManager().getLocalSocketAddress();
     }
 
     @Override
@@ -1434,6 +1500,7 @@ public class QuicClientConnectionImpl extends QuicConnectionImpl implements Quic
         private X509ExtendedKeyManager keyManager;
         private Predicate<PublicKey> serverRawPublicKeyVerifier;
         private KeyPair clientRawPublicKey;
+        private SharedEndpoint sharedEndpoint;
 
         private BuilderImpl() {
             connectionProperties.setMaxIdleTimeout(DEFAULT_MAX_IDLE_TIMEOUT);
@@ -1459,7 +1526,7 @@ public class QuicClientConnectionImpl extends QuicConnectionImpl implements Quic
                     new QuicClientConnectionImpl(host, port, ipVersionOption, applicationProtocol, connectTimeoutInMillis, connectionProperties, sessionTicket, Version.of(quicVersion),
                             Version.of(preferredVersion), log, proxyHost, secretsFile, initialRtt, connectionIdLength,
                             cipherSuites, keyShareGroups, supportedGroups, clientCertificate, clientCertificateKey,
-                            socketFactory);
+                            socketFactory, sharedEndpoint);
 
             if (omitCertificateCheck) {
                 quicConnection.trustAnyServerCertificate();
@@ -1798,6 +1865,15 @@ public class QuicClientConnectionImpl extends QuicConnectionImpl implements Quic
         @Override
         public Builder clientRawPublicKey(KeyPair keyPair) {
             this.clientRawPublicKey = keyPair;
+            return this;
+        }
+
+        @Override
+        public Builder sharedEndpoint(SharedEndpoint endpoint) {
+            this.sharedEndpoint = endpoint;
+            // Short header packets carry no connection ID length, so the endpoint can only route them when all its
+            // connections use the same length.
+            this.connectionIdLength = endpoint.connectionIdLength();
             return this;
         }
 

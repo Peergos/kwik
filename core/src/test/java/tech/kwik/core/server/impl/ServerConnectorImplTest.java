@@ -384,6 +384,76 @@ class ServerConnectorImplTest {
     }
     //endregion
 
+    //region shared endpoint
+    @Test
+    void longHeaderPacketForRegisteredClientConnectionIdIsRoutedToClient() throws Exception {
+        // Given
+        byte[] clientCid = new byte[] { 1, 2, 3, 4, 5, 6, 7, 8 };
+        List<RawPacket> routed = new java.util.ArrayList<>();
+        server.getSharedEndpoint().registerConnectionId(clientCid, routed::add);
+
+        // When: an initial packet (as a server would send in response to the client's initial) addressed to the client
+        ByteBuffer buffer = ByteBuffer.allocate(1200);
+        buffer.put((byte) 0b1100_0000);
+        buffer.putInt(Version.getDefault().getId());
+        buffer.put((byte) 8);
+        buffer.put(clientCid);
+        buffer.put((byte) 0);
+        buffer.rewind();
+        server.process(createPacket(buffer));
+
+        // Then: it is not taken for a new incoming connection
+        assertThat(routed).hasSize(1);
+        assertThat(((ServerConnectionRegistryImpl) new FieldReader(server, "connectionRegistry").read()).getAllConnections()).isEmpty();
+    }
+
+    @Test
+    void shortHeaderPacketForRegisteredClientConnectionIdIsRoutedToClient() throws Exception {
+        // Given
+        byte[] clientCid = new byte[] { 8, 7, 6, 5, 4, 3, 2, 1 };
+        List<RawPacket> routed = new java.util.ArrayList<>();
+        server.getSharedEndpoint().registerConnectionId(clientCid, routed::add);
+
+        // When
+        ByteBuffer buffer = ByteBuffer.allocate(40);
+        buffer.put((byte) 0b0100_0001);
+        buffer.put(clientCid);
+        buffer.put(new byte[31]);
+        buffer.flip();
+        server.process(createPacket(buffer));
+
+        // Then
+        assertThat(routed).hasSize(1);
+    }
+
+    @Test
+    void packetForDeregisteredClientConnectionIdIsNotRoutedToClient() throws Exception {
+        // Given
+        byte[] clientCid = new byte[] { 8, 7, 6, 5, 4, 3, 2, 1 };
+        List<RawPacket> routed = new java.util.ArrayList<>();
+        server.getSharedEndpoint().registerConnectionId(clientCid, routed::add);
+        server.getSharedEndpoint().deregisterConnectionId(clientCid.clone());
+
+        // When
+        ByteBuffer buffer = ByteBuffer.allocate(40);
+        buffer.put((byte) 0b0100_0001);
+        buffer.put(clientCid);
+        buffer.put(new byte[31]);
+        buffer.flip();
+        server.process(createPacket(buffer));
+
+        // Then
+        assertThat(routed).isEmpty();
+    }
+
+    @Test
+    void clientConnectionIdMustHaveConnectorsConnectionIdLength() {
+        org.assertj.core.api.Assertions.assertThatThrownBy(() ->
+                server.getSharedEndpoint().registerConnectionId(new byte[4], p -> {}))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+    //endregion
+
     //region helper methods
     private ByteBuffer toByteBuffer(String hexData) {
         return ByteBuffer.wrap(ByteUtils.hexToBytes(hexData.replace(" ", "")));

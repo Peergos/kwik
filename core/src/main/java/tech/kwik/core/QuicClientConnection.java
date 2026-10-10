@@ -36,6 +36,7 @@ import java.security.PrivateKey;
 import java.security.PublicKey;
 import java.security.cert.X509Certificate;
 import java.util.function.Predicate;
+import tech.kwik.core.socket.SharedEndpoint;
 import java.time.Duration;
 import java.util.List;
 
@@ -209,6 +210,13 @@ public interface QuicClientConnection extends QuicConnection {
          * @return  the builder
          */
         Builder clientRawPublicKey(KeyPair keyPair);
+
+        /**
+         * Sends and receives via the given shared endpoint (e.g. a server connector's socket) instead of a socket of
+         * its own. Overrides the connection ID length with the endpoint's.
+         * @return  the builder
+         */
+        Builder sharedEndpoint(SharedEndpoint endpoint);
 
         /**
          * Sets the key manager that will be used to authenticate the client to the server. The key manager should

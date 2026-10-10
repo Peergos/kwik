@@ -42,6 +42,7 @@ import tech.kwik.core.server.ApplicationProtocolConnectionFactory;
 import tech.kwik.core.server.ServerConnectionConfig;
 import tech.kwik.core.server.ServerConnectionFactory;
 import tech.kwik.core.server.ServerConnector;
+import tech.kwik.core.socket.SharedEndpoint;
 import tech.kwik.core.util.Bytes;
 import tech.kwik.core.util.MemoryWatcher;
 
@@ -61,10 +62,12 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.*;
+import java.util.function.Consumer;
 import java.util.function.Predicate;
 import java.util.stream.Collectors;
 
@@ -82,6 +85,9 @@ public class ServerConnectorImpl implements ServerConnector {
     private final List<QuicConnection.QuicVersion> supportedVersions;
     private final List<Integer> supportedVersionIds;
     private final DatagramSocket serverSocket;
+    // Client connections sharing this connector's socket, by (each of) their connection IDs.
+    private final Map<ByteBuffer, Consumer<RawPacket>> clientConnections = new ConcurrentHashMap<>();
+    private final SharedEndpoint sharedEndpoint = new SharedEndpointImpl();
     private TlsServerEngineFactory tlsEngineFactory;
     private final ServerConnectionFactory serverConnectionFactory;
     private ApplicationProtocolRegistry applicationProtocolRegistry;
@@ -226,6 +232,13 @@ public class ServerConnectorImpl implements ServerConnector {
 
     protected void process(RawPacket rawPacket) {
         ByteBuffer data = rawPacket.getData();
+        if (!clientConnections.isEmpty()) {
+            Consumer<RawPacket> clientConnection = clientConnections.get(destinationConnectionId(data));
+            if (clientConnection != null) {
+                clientConnection.accept(rawPacket);
+                return;
+            }
+        }
         if (isValidLongHeaderPacket(data)) {
             processLongHeaderPacket(rawPacket.getPeerAddress(), data);
         }
@@ -242,6 +255,54 @@ public class ServerConnectorImpl implements ServerConnector {
             // "Fixed Bit: The next bit (0x40) of byte 0 is set to 1. Packets containing a zero value for this bit are
             //  not valid packets in this version and MUST be discarded. "
             log.warn(String.format("Invalid Quic packet (flags: %02x) is discarded", (int) data.get()));
+        }
+    }
+
+    private ByteBuffer destinationConnectionId(ByteBuffer data) {
+        if (isValidLongHeaderPacket(data)) {
+            return ByteBuffer.wrap(data.array(), data.arrayOffset() + 6, data.get(5) & 0xff).slice();
+        }
+        else if (isValidShortHeaderPacket(data)) {
+            return ByteBuffer.wrap(data.array(), data.arrayOffset() + 1, connectionIdLength).slice();
+        }
+        return ByteBuffer.allocate(0);
+    }
+
+    @Override
+    public SharedEndpoint getSharedEndpoint() {
+        return sharedEndpoint;
+    }
+
+    private class SharedEndpointImpl implements SharedEndpoint {
+        @Override
+        public int connectionIdLength() {
+            return connectionIdLength;
+        }
+
+        @Override
+        public InetSocketAddress getLocalAddress() {
+            return (InetSocketAddress) serverSocket.getLocalSocketAddress();
+        }
+
+        @Override
+        public Instant send(ByteBuffer data, InetSocketAddress destination) throws IOException {
+            DatagramPacket datagram = new DatagramPacket(data.array(), data.limit(), destination.getAddress(), destination.getPort());
+            Instant timeSent = Instant.now();
+            serverSocket.send(datagram);
+            return timeSent;
+        }
+
+        @Override
+        public void registerConnectionId(byte[] connectionId, Consumer<RawPacket> receiver) {
+            if (connectionId.length != connectionIdLength) {
+                throw new IllegalArgumentException("connection ID length must be " + connectionIdLength);
+            }
+            clientConnections.put(ByteBuffer.wrap(connectionId.clone()), receiver);
+        }
+
+        @Override
+        public void deregisterConnectionId(byte[] connectionId) {
+            clientConnections.remove(ByteBuffer.wrap(connectionId));
         }
     }
 

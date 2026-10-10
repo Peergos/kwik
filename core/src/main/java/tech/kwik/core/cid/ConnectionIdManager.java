@@ -51,7 +51,7 @@ public class ConnectionIdManager implements ConnectionIdProvider {
     public static final int MAX_CIDS_PER_CONNECTION = 6;
 
     private final int connectionIdLength;
-    private final ServerConnectionRegistry connectionRegistry;
+    private ServerConnectionRegistry connectionRegistry;
     private volatile Sender sender;
     private final BiConsumer<Integer, String> closeConnectionCallback;
     private final SourceConnectionIdRegistry cidRegistry;
@@ -143,6 +143,15 @@ public class ConnectionIdManager implements ConnectionIdProvider {
                 return Stream.empty();
             }
         };
+    }
+
+    /**
+     * Sets the registry that is notified of connection IDs this (client) endpoint issues and retires; used to route
+     * incoming datagrams when the client shares its endpoint (see {@link tech.kwik.core.socket.SharedEndpoint}).
+     */
+    public void setConnectionRegistry(ServerConnectionRegistry connectionRegistry) {
+        assert role == Client;
+        this.connectionRegistry = connectionRegistry;
     }
 
     public void handshakeFinished() {

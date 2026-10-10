@@ -53,6 +53,12 @@ public interface ServerConnector extends AutoCloseable {
     void start();
 
     /**
+     * Returns this connector's socket as an endpoint that client connections can share, see
+     * {@link tech.kwik.core.QuicClientConnection.Builder#sharedEndpoint}.
+     */
+    tech.kwik.core.socket.SharedEndpoint getSharedEndpoint();
+
+    /**
      * Closes the server connector and releases all resources. This includes refusing new connections and
      * properly closing all existing connections. This method returns after all connections are closed or after
      * a fixed timeout.
