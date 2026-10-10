@@ -233,6 +233,11 @@ public class NullLogger implements Logger {
     }
 
     @Override
+    public boolean logPackets() {
+        return false;
+    }
+
+    @Override
     public QLog getQLog() {
         return new NullQLog();
     }

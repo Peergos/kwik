@@ -38,6 +38,7 @@ import tech.kwik.core.impl.IdleTimer;
 import tech.kwik.core.impl.QuicConnectionImpl;
 import tech.kwik.core.impl.VersionHolder;
 import tech.kwik.core.log.Logger;
+import tech.kwik.core.log.NullQLog;
 import tech.kwik.core.log.QLog;
 import tech.kwik.core.packet.QuicPacket;
 import tech.kwik.core.packet.ShortHeaderPacket;
@@ -817,9 +818,11 @@ public class SenderImpl implements Sender, CongestionControlEventListener, Hands
             lastestAckElicitingTime = timeSent;
         }
         dataSent += data;
-        List<QuicPacket> packetsSent = itemsToSend.stream().map(item -> item.getPacket()).collect(Collectors.toList());
-        log.sent(timeSent, packetsSent);
-        qlog.emitPacketSentEvent(packetsSent, timeSent);
+        if (log.logPackets() || !(qlog instanceof NullQLog)) {
+            List<QuicPacket> packetsSent = itemsToSend.stream().map(item -> item.getPacket()).collect(Collectors.toList());
+            log.sent(timeSent, packetsSent);
+            qlog.emitPacketSentEvent(packetsSent, timeSent);
+        }
     }
 
     private void addExternalPadding(ByteBuffer buffer, int paddingLength) {

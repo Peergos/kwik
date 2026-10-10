@@ -83,6 +83,11 @@ public abstract class BaseLogger implements Logger {
     }
 
     @Override
+    public boolean logPackets() {
+        return logPackets;
+    }
+
+    @Override
     public void logDecrypted(boolean enabled) {
         logDecrypted = enabled;
     }
@@ -253,8 +258,8 @@ public abstract class BaseLogger implements Logger {
 
     @Override
     public void sent(Instant sent, QuicPacket packet) {
-        synchronized (this) {
-            if (useRelativeTime) {
+        if (useRelativeTime) {
+            synchronized (this) {
                 if (start == null) {
                     start = sent;
                 }
@@ -267,8 +272,8 @@ public abstract class BaseLogger implements Logger {
 
     @Override
     public void sent(Instant sent, List<QuicPacket> packets) {
-        synchronized (this) {
-            if (useRelativeTime) {
+        if (useRelativeTime) {
+            synchronized (this) {
                 if (start == null) {
                     start = sent;
                 }

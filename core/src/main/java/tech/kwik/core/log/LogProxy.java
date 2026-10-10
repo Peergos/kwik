@@ -114,6 +114,11 @@ public class LogProxy implements Logger {
     }
 
     @Override
+    public boolean logPackets() {
+        return proxiedLogger.logPackets();
+    }
+
+    @Override
     public void logCongestionControl(boolean enabled) {
         proxiedLogger.logCongestionControl(enabled);
     }
