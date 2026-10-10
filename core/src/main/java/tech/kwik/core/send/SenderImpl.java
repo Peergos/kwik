@@ -281,6 +281,15 @@ public class SenderImpl implements Sender, CongestionControlEventListener, Hands
     }
 
     @Override
+    public void endDeferral() {
+        if (deferWakeUp) {
+            deferWakeUp = false;
+            deferredDatagrams = 0;
+            packetProcessed(false);
+        }
+    }
+
+    @Override
     public void moreDatagramsQueued(boolean more) {
         deferWakeUp = more && ++deferredDatagrams < MAX_DEFERRED_DATAGRAMS;
         if (!deferWakeUp) {

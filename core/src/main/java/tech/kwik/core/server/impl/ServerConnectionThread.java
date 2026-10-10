@@ -128,7 +128,12 @@ public class ServerConnectionThread implements ServerConnectionProxy {
             }
 
             while (! processorThread.isInterrupted()) {
-                ReceivedDatagram datagram = parsed.take();
+                ReceivedDatagram datagram = parsed.poll();
+                if (datagram == null) {
+                    // The 'more' hint comes from the shared socket, so the next datagram may have gone to another connection.
+                    serverConnection.getSender().endDeferral();
+                    datagram = parsed.take();
+                }
                 PacketMetaData metaData = new PacketMetaData(datagram.timeReceived, datagram.sourceAddress, datagram.datagramNumber, datagram.size);
                 serverConnection.getSender().moreDatagramsQueued(datagram.more || !parsed.isEmpty() || !queue.isEmpty());
                 parser.setPreParsed(datagram.preParsed);

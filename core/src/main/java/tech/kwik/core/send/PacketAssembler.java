@@ -89,6 +89,9 @@ public class PacketAssembler {
      */
     Optional<SendItem> assemble(int remainingCwndSize, int availablePacketSize, InetSocketAddress defaultClientAddress) {
         final int available = Integer.min(remainingCwndSize, availablePacketSize);
+        if (!stopping && requestQueue.isIdle()) {
+            return Optional.empty();
+        }
 
         // First check for alternate client address (has always priority)
         if (requestQueue.hasAlternateAddressRequest()) {

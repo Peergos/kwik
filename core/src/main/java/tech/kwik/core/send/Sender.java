@@ -144,6 +144,12 @@ public interface Sender {
     }
 
     /**
+     * Ends deferral started by moreDatagramsQueued, e.g. because the receiver found no more datagrams after all.
+     */
+    default void endDeferral() {
+    }
+
+    /**
      * Notifies the sender that queued frames and packets should be sent as soon as possible.
      */
     void flush();

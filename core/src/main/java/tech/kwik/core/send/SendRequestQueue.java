@@ -42,7 +42,7 @@ public class SendRequestQueue {
     private Deque<List<QuicFrame>> probeQueue = new ConcurrentLinkedDeque<>();
     private Deque<SendRequest> altAddressRequestQueue = new ConcurrentLinkedDeque<>();
     private final Object ackLock = new Object();
-    private Instant nextAckTime;
+    private volatile Instant nextAckTime;
     private volatile boolean cleared;
 
     public SendRequestQueue(EncryptionLevel level) {
@@ -137,6 +137,9 @@ public class SendRequestQueue {
      * @return
      */
     public boolean mustAndWillSendAck() {
+        if (nextAckTime == null) {
+            return false;
+        }
         Instant now = clock.instant();
         synchronized (ackLock) {
             boolean must = nextAckTime != null && (now.isAfter(nextAckTime) || Duration.between(now, nextAckTime).toMillis() < 1);
@@ -173,6 +176,13 @@ public class SendRequestQueue {
      */
     public void addRequest(Function<Integer, QuicFrame> frameSupplier, int estimatedSize, Consumer<QuicFrame> lostCallback) {
         requestQueue.addLast(new FrameSupplierSendRequest(estimatedSize, frameSupplier, lostCallback));
+    }
+
+    /**
+     * Whether there is nothing at all to send: no requests, probes, alternate address requests or pending ack.
+     */
+    public boolean isIdle() {
+        return nextAckTime == null && requestQueue.isEmpty() && probeQueue.isEmpty() && altAddressRequestQueue.isEmpty();
     }
 
     public boolean hasRequests() {
