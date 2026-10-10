@@ -44,6 +44,7 @@ public class ServerConnectionConfigImpl implements ServerConnectionConfig {
     private ServerConnectionConfig.RetryRequired retryRequired;
     private int connectionIdLength = DEFAULT_CONNECTION_ID_LENGTH;
     private boolean useStrictSmallestAllowedMaximumDatagramSize;
+    private long multipathMaxPathId = -1;
 
     private ServerConnectionConfigImpl() {
     }
@@ -97,6 +98,11 @@ public class ServerConnectionConfigImpl implements ServerConnectionConfig {
         return connectionIdLength;
     }
 
+    @Override
+    public long multipathMaxPathId() {
+        return multipathMaxPathId;
+    }
+
     public RetryRequired retryRequired() {
         return retryRequired;
     }
@@ -134,6 +140,7 @@ public class ServerConnectionConfigImpl implements ServerConnectionConfig {
         configBuilder.retryRequired(this.retryRequired());
         configBuilder.connectionIdLength(this.connectionIdLength());
         configBuilder.useStrictSmallestAllowedMaximumDatagramSize(this.useStrictSmallestAllowedMaximumDatagramSize());
+        configBuilder.multipath(this.multipathMaxPathId);
 
         return configBuilder.build();
     }
@@ -302,6 +309,12 @@ public class ServerConnectionConfigImpl implements ServerConnectionConfig {
         @Override
         public Builder maxTotalPeerInitiatedBidirectionalStreams(long max) {
             config.maxTotalBidirectionalStreams = max;
+            return this;
+        }
+
+        @Override
+        public Builder multipath(long maxPathId) {
+            config.multipathMaxPathId = maxPathId;
             return this;
         }
 

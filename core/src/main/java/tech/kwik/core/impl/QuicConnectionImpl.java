@@ -67,6 +67,9 @@ import static tech.kwik.core.util.Bytes.bytesToHex;
 
 public abstract class QuicConnectionImpl implements QuicConnection, PacketProcessor, FrameProcessor, PacketFilter {
 
+    // draft-ietf-quic-multipath: the maximum path IDs each side allows; null when it does not support multipath.
+    private volatile Long localMaxPathId;
+    private volatile Long peerMaxPathId;
     private volatile Integer addressDiscoveryRole;
     private volatile Integer peerAddressDiscoveryRole;
     private volatile long nextObservedAddressSequenceNumber;
@@ -415,8 +418,91 @@ public abstract class QuicConnectionImpl implements QuicConnection, PacketProces
         }
     }
 
+    /**
+     * Offers the multipath extension (draft-ietf-quic-multipath), allowing the peer path IDs up to the given value.
+     */
+    public void enableMultipath(long maxPathId) {
+        if (maxPathId < 0 || maxPathId > 0xffffffffL) {
+            throw new IllegalArgumentException("path id must be in 0..2^32-1");
+        }
+        localMaxPathId = maxPathId;
+    }
+
+    protected Long getLocalMaxPathId() {
+        return localMaxPathId;
+    }
+
+    /**
+     * Whether both endpoints support the multipath extension (draft-ietf-quic-multipath).
+     */
+    public boolean isMultipathEnabled() {
+        return localMaxPathId != null && peerMaxPathId != null;
+    }
+
+    /**
+     * Checks the path ID of a received multipath frame; returns whether the frame applies to the initial path (path
+     * ID 0), which is the only one used so far. Other path IDs are ignored, or close the connection when invalid.
+     */
+    protected boolean forInitialPath(long pathId) {
+        if (pathId < 0) {
+            return true;
+        }
+        if (!isMultipathEnabled()) {
+            immediateCloseWithError(PROTOCOL_VIOLATION.value, "multipath frame received without multipath negotiated");
+            return false;
+        }
+        if (pathId > localMaxPathId) {
+            immediateCloseWithError(PROTOCOL_VIOLATION.value, "path id " + pathId + " exceeds maximum path id " + localMaxPathId);
+            return false;
+        }
+        return pathId == 0;
+    }
+
+    @Override
+    public void process(PathAbandonFrame pathAbandonFrame, QuicPacket packet, PacketMetaData metaData) {
+        if (forInitialPath(pathAbandonFrame.getPathId())) {
+            // https://www.ietf.org/archive/id/draft-ietf-quic-multipath-21.html#section-3.4
+            // "If a PATH_ABANDON frame is received for the only open path of a QUIC connection, the receiving peer
+            //  SHOULD send a CONNECTION_CLOSE frame and enter the closing state."
+            immediateCloseWithError(NO_ERROR.value, "peer abandoned the only path");
+        }
+    }
+
+    @Override
+    public void process(PathStatusFrame pathStatusFrame, QuicPacket packet, PacketMetaData metaData) {
+        forInitialPath(pathStatusFrame.getPathId());
+    }
+
+    @Override
+    public void process(MaxPathIdFrame maxPathIdFrame, QuicPacket packet, PacketMetaData metaData) {
+        if (!isMultipathEnabled()) {
+            immediateCloseWithError(PROTOCOL_VIOLATION.value, "multipath frame received without multipath negotiated");
+            return;
+        }
+        if (maxPathIdFrame.getMaxPathId() > 0xffffffffL) {
+            immediateCloseWithError(PROTOCOL_VIOLATION.value, "invalid maximum path id");
+            return;
+        }
+        if (maxPathIdFrame.getMaxPathId() > peerMaxPathId) {
+            peerMaxPathId = maxPathIdFrame.getMaxPathId();
+        }
+    }
+
+    @Override
+    public void process(PathsBlockedFrame pathsBlockedFrame, QuicPacket packet, PacketMetaData metaData) {
+        if (!isMultipathEnabled() || pathsBlockedFrame.getMaxPathId() > localMaxPathId) {
+            immediateCloseWithError(PROTOCOL_VIOLATION.value, "invalid PATHS_BLOCKED frame");
+        }
+    }
+
+    @Override
+    public void process(PathCidsBlockedFrame pathCidsBlockedFrame, QuicPacket packet, PacketMetaData metaData) {
+        forInitialPath(pathCidsBlockedFrame.getPathId());
+    }
+
     protected void processCommonTransportParameters(TransportParameters peerTransportParams) {
         peerAddressDiscoveryRole = peerTransportParams.getAddressDiscoveryRole();
+        peerMaxPathId = peerTransportParams.getInitialMaxPathId();
         getStreamManager().setInitialMaxStreamsBidi(peerTransportParams.getInitialMaxStreamsBidi());
         getStreamManager().setInitialMaxStreamsUni(peerTransportParams.getInitialMaxStreamsUni());
 
@@ -492,6 +578,9 @@ public abstract class QuicConnectionImpl implements QuicConnection, PacketProces
 
     @Override
     public void process(AckFrame ackFrame, QuicPacket packet, PacketMetaData metaData) {
+        if (!forInitialPath(ackFrame.getPathId())) {
+            return;
+        }
         ackFrame.setDelayExponent(peerAckDelayExponent);
         getAckGenerator().received(ackFrame, packet.getPnSpace(), metaData.timeReceived());
         recoveryManager.received(ackFrame, packet.getPnSpace(), metaData.timeReceived());
@@ -565,6 +654,9 @@ public abstract class QuicConnectionImpl implements QuicConnection, PacketProces
 
     @Override
     public void process(NewConnectionIdFrame newConnectionIdFrame, QuicPacket packet, PacketMetaData metaData) {
+        if (!forInitialPath(newConnectionIdFrame.getPathId())) {
+            return;
+        }
         getConnectionIdManager().process(newConnectionIdFrame);
     }
 

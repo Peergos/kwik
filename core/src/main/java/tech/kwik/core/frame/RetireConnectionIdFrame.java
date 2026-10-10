@@ -34,6 +34,10 @@ import java.nio.ByteBuffer;
  */
 public class RetireConnectionIdFrame extends QuicFrame {
 
+    public static final long PATH_RETIRE_CONNECTION_ID = 0x3e79;
+
+    // For a PATH_RETIRE_CONNECTION_ID frame (draft-ietf-quic-multipath); -1 for a RETIRE_CONNECTION_ID frame.
+    private long pathId = -1;
     private int sequenceNr;
 
     public RetireConnectionIdFrame(Version quicVersion) {
@@ -43,37 +47,62 @@ public class RetireConnectionIdFrame extends QuicFrame {
         this.sequenceNr = sequenceNumber;
     }
 
+    /**
+     * Creates a PATH_RETIRE_CONNECTION_ID frame for the given path.
+     */
+    public RetireConnectionIdFrame(Version quicVersion, long pathId, int sequenceNumber) {
+        this.pathId = pathId;
+        this.sequenceNr = sequenceNumber;
+    }
+
     public RetireConnectionIdFrame parse(ByteBuffer buffer, Logger log) throws InvalidIntegerEncodingException, TransportError {
-        buffer.get();
+        if (VariableLengthInteger.parseLong(buffer) == PATH_RETIRE_CONNECTION_ID) {
+            pathId = VariableLengthInteger.parseLong(buffer);
+        }
         sequenceNr = parseVariableLengthIntegerLimitedToInt(buffer);  // Kwik does not support sequence numbers larger than max int.
         return this;
     }
 
     @Override
     public int getFrameLength() {
-        return 1 + VariableLengthInteger.bytesNeeded(sequenceNr);
+        return (pathId >= 0? VariableLengthInteger.bytesNeeded(PATH_RETIRE_CONNECTION_ID) + VariableLengthInteger.bytesNeeded(pathId): 1)
+                + VariableLengthInteger.bytesNeeded(sequenceNr);
     }
 
     @Override
     public void serialize(ByteBuffer buffer) {
-        buffer.put((byte) 0x19);
+        if (pathId >= 0) {
+            VariableLengthInteger.encode(PATH_RETIRE_CONNECTION_ID, buffer);
+            VariableLengthInteger.encode(pathId, buffer);
+        }
+        else {
+            buffer.put((byte) 0x19);
+        }
         VariableLengthInteger.encode(sequenceNr, buffer);
     }
 
     @Override
     public String toString() {
-        return "RetireConnectionIdFrame[" + sequenceNr + "]";
+        return "RetireConnectionIdFrame[" + (pathId >= 0? "path " + pathId + ",": "") + sequenceNr + "]";
     }
 
     @Override
     public boolean equals(Object obj) {
         return (obj instanceof RetireConnectionIdFrame) &&
-                ((RetireConnectionIdFrame) obj).sequenceNr == this.sequenceNr;
+                ((RetireConnectionIdFrame) obj).sequenceNr == this.sequenceNr &&
+                ((RetireConnectionIdFrame) obj).pathId == this.pathId;
     }
 
     @Override
     public int hashCode() {
         return Integer.hashCode(sequenceNr);
+    }
+
+    /**
+     * The path ID of a PATH_RETIRE_CONNECTION_ID frame, or -1 for a RETIRE_CONNECTION_ID frame.
+     */
+    public long getPathId() {
+        return pathId;
     }
 
     public int getSequenceNr() {

@@ -46,6 +46,8 @@ public class AckFrame extends QuicFrame {
     private static final int MAX_FRAME_SIZE = 1000;  // Should be large enough; leave some space for packet overhead.
 
     private byte[] frameBytes;
+    // For a PATH_ACK frame (draft-ietf-quic-multipath); -1 for an ACK frame.
+    private long pathId = -1;
     private long largestAcknowledged;
     private int ackDelay;
     private List<Range> acknowledgedRanges;
@@ -76,6 +78,13 @@ public class AckFrame extends QuicFrame {
      * @param ackDelayInMillis   the ack delay in milliseconds
      */
     public AckFrame(Version quicVersion, List<Range> ackRanges, int ackDelayInMillis) {
+        this(quicVersion, -1, ackRanges, ackDelayInMillis);
+    }
+
+    /**
+     * Creates a PATH_ACK frame for the given path, or an ACK frame when the path ID is negative.
+     */
+    public AckFrame(Version quicVersion, long pathId, List<Range> ackRanges, int ackDelayInMillis) {
         if (! Range.validRangeList(ackRanges)) {
             throw new IllegalArgumentException("invalid range");  // TODO: replace by assert?
         }
@@ -88,8 +97,15 @@ public class AckFrame extends QuicFrame {
         Range firstRange = rangeIterator.next();
         largestAcknowledged = firstRange.getLargest();
 
+        this.pathId = pathId;
         ByteBuffer buffer = ByteBuffer.allocate(MAX_FRAME_SIZE);
-        buffer.put((byte) 0x02);
+        if (pathId >= 0) {
+            buffer.put((byte) 0x3e);
+            VariableLengthInteger.encode(pathId, buffer);
+        }
+        else {
+            buffer.put((byte) 0x02);
+        }
         VariableLengthInteger.encode(largestAcknowledged, buffer);
         VariableLengthInteger.encode(ackDelay, buffer);
         int ackRangeCountFieldPosition = buffer.position();
@@ -155,6 +171,9 @@ public class AckFrame extends QuicFrame {
         acknowledgedRanges = new ArrayList<>();
 
         int frameType = buffer.get();
+        if (frameType == 0x3e || frameType == 0x3f) {
+            pathId = VariableLengthInteger.parseLong(buffer);
+        }
 
         largestAcknowledged = VariableLengthInteger.parseLong(buffer);
 
@@ -189,7 +208,7 @@ public class AckFrame extends QuicFrame {
             currentSmallest -= (gapSize + addAcknowledgeRange(currentSmallest - gapSize - 1, contiguousPacketsPreceding));
         }
 
-        if (frameType == 0x03) {
+        if (frameType == 0x03 || frameType == 0x3f) {
             // Parse ECN counts (in order to read the complete frame from the buffer)
             VariableLengthInteger.parseLong(buffer);
             VariableLengthInteger.parseLong(buffer);
@@ -249,6 +268,13 @@ public class AckFrame extends QuicFrame {
     @Override
     public boolean isAckEliciting() {
         return false;
+    }
+
+    /**
+     * The path ID of a PATH_ACK frame, or -1 for an ACK frame.
+     */
+    public long getPathId() {
+        return pathId;
     }
 
     public long getLargestAcknowledged() {

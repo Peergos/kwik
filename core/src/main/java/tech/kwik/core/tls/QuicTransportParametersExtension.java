@@ -60,6 +60,8 @@ public class QuicTransportParametersExtension implements Extension {
     private static final long RESET_STREAM_AT_PARAMETER_ID_DRAFT_07 = 0x17f7586d2cb571L;
     // QUIC Address Discovery, the codepoint noq (and so iroh) uses
     public static final long ADDRESS_DISCOVERY_PARAMETER_ID = 0x9f81a176L;
+    // https://www.ietf.org/archive/id/draft-ietf-quic-multipath-21.html#section-2.1
+    public static final long INITIAL_MAX_PATH_ID_PARAMETER_ID = 0x3e;
 
     private static final int MINIMUM_EXTENSION_LENGTH = 2;
     public static final int CODEPOINT_IETFDRAFT = 0xffa5;
@@ -238,6 +240,12 @@ public class QuicTransportParametersExtension implements Extension {
             VariableLengthInteger.encode(params.getAddressDiscoveryRole(), buffer);
         }
 
+        if (params.getInitialMaxPathId() != null) {
+            VariableLengthInteger.encode(INITIAL_MAX_PATH_ID_PARAMETER_ID, buffer);
+            VariableLengthInteger.encode(VariableLengthInteger.bytesNeeded(params.getInitialMaxPathId()), buffer);
+            VariableLengthInteger.encode(params.getInitialMaxPathId(), buffer);
+        }
+
         if (params.isResetStreamAtSupported()) {
             addTransportParameter(buffer, RESET_STREAM_AT_PARAMETER_ID);
             addTransportParameter(buffer, RESET_STREAM_AT_PARAMETER_ID_DRAFT_07);
@@ -409,6 +417,14 @@ public class QuicTransportParametersExtension implements Extension {
             }
             log.debug("- address discovery role: " + role);
             params.setAddressDiscoveryRole((int) role);
+        }
+        else if (parameterId == INITIAL_MAX_PATH_ID_PARAMETER_ID) {
+            long maxPathId = VariableLengthInteger.parseLong(buffer);
+            if (maxPathId > 0xffffffffL) {
+                throw new TransportError(QuicConstants.TransportErrorCode.TRANSPORT_PARAMETER_ERROR, "initial_max_path_id exceeds 2^32-1");
+            }
+            log.debug("- initial max path id: " + maxPathId);
+            params.setInitialMaxPathId(maxPathId);
         }
         else if (parameterId == RESET_STREAM_AT_PARAMETER_ID || parameterId == RESET_STREAM_AT_PARAMETER_ID_DRAFT_07) {
             if (size != 0) {

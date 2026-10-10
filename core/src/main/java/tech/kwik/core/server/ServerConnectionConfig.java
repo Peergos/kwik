@@ -33,6 +33,13 @@ public interface ServerConnectionConfig extends ConnectionConfig {
 
     ServerConnectionConfig merge(ApplicationProtocolSettings protocol);
 
+    /**
+     * The maximum path ID offered with the multipath extension (draft-ietf-quic-multipath), or -1 when not offered.
+     */
+    default long multipathMaxPathId() {
+        return -1;
+    }
+
     static Builder builder() {
         return new ServerConnectionConfigImpl.BuilderImpl();
     }
@@ -65,5 +72,10 @@ public interface ServerConnectionConfig extends ConnectionConfig {
         Builder maxTotalPeerInitiatedBidirectionalStreams(long max);
 
         Builder useStrictSmallestAllowedMaximumDatagramSize(boolean value);
+
+        /**
+         * Offers the multipath extension (draft-ietf-quic-multipath), allowing the peer path IDs up to the given value.
+         */
+        Builder multipath(long maxPathId);
     }
 }

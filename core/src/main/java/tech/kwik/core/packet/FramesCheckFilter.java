@@ -40,6 +40,13 @@ public class FramesCheckFilter extends BasePacketFilter {
         // https://www.rfc-editor.org/rfc/rfc9000.html#section-12.4
         // "An endpoint MUST treat receipt of a frame in a packet type that is not permitted as a connection error
         //  of type PROTOCOL_VIOLATION."
+        if (!(packet instanceof ShortHeaderPacket) && packet.getFrames().stream().anyMatch(FramesCheckFilter::isMultipathFrame)) {
+            // https://www.ietf.org/archive/id/draft-ietf-quic-multipath-21.html#section-4
+            // "If an endpoint receives a multipath-specific frame in a different packet type, it MUST close the
+            //  connection with an error of type PROTOCOL_VIOLATION."
+            discard(packet, "multipath frame in a packet other than 1-RTT");
+            throw new TransportError(QuicConstants.TransportErrorCode.PROTOCOL_VIOLATION, "multipath frame in a packet other than 1-RTT");
+        }
         if (packet instanceof InitialPacket) {
             checkFrames((InitialPacket) packet);
         }
@@ -53,6 +60,14 @@ public class FramesCheckFilter extends BasePacketFilter {
             checkFrames((ShortHeaderPacket) packet);
         }
         next(packet, metaData);
+    }
+
+    static boolean isMultipathFrame(QuicFrame frame) {
+        return frame instanceof AckFrame && ((AckFrame) frame).getPathId() >= 0
+                || frame instanceof NewConnectionIdFrame && ((NewConnectionIdFrame) frame).getPathId() >= 0
+                || frame instanceof RetireConnectionIdFrame && ((RetireConnectionIdFrame) frame).getPathId() >= 0
+                || frame instanceof PathAbandonFrame || frame instanceof PathStatusFrame || frame instanceof MaxPathIdFrame
+                || frame instanceof PathsBlockedFrame || frame instanceof PathCidsBlockedFrame;
     }
 
     private void checkFrames(InitialPacket packet) throws TransportError {

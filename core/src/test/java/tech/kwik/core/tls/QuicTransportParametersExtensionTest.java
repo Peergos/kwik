@@ -241,6 +241,31 @@ class QuicTransportParametersExtensionTest {
     }
 
     @Test
+    void initialMaxPathIdShouldRoundTrip() throws Exception {
+        TransportParameters tp = new TransportParameters(10, 1_048_576, 1024, 256);
+        tp.setInitialSourceConnectionId(new byte[] { 0x01, 0x02, 0x03, 0x04 });
+        tp.setInitialMaxPathId(12L);
+        byte[] serializedForm = new QuicTransportParametersExtension(Version.getDefault(), tp, Role.Client).getBytes();
+
+        QuicTransportParametersExtension parsed = new QuicTransportParametersExtension(Version.getDefault());
+        parsed.parse(ByteBuffer.wrap(serializedForm), Role.Server, mock(Logger.class));
+
+        assertThat(parsed.getTransportParameters().getInitialMaxPathId()).isEqualTo(12L);
+    }
+
+    @Test
+    void absentInitialMaxPathIdMeansNoMultipath() throws Exception {
+        TransportParameters tp = new TransportParameters(10, 1_048_576, 1024, 256);
+        tp.setInitialSourceConnectionId(new byte[] { 0x01, 0x02, 0x03, 0x04 });
+        byte[] serializedForm = new QuicTransportParametersExtension(Version.getDefault(), tp, Role.Client).getBytes();
+
+        QuicTransportParametersExtension parsed = new QuicTransportParametersExtension(Version.getDefault());
+        parsed.parse(ByteBuffer.wrap(serializedForm), Role.Server, mock(Logger.class));
+
+        assertThat(parsed.getTransportParameters().getInitialMaxPathId()).isNull();
+    }
+
+    @Test
     void parseInitialSourceCconnectionId() throws Exception {
         //                                                 id sz
         byte[] rawData = ByteUtils.hexToBytes("00 39 00 0a 0f 08 01 02 03 04 05 06 07 08".replaceAll(" ", ""));

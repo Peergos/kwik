@@ -342,6 +342,31 @@ abstract public class QuicPacket {
         parseFrames(ByteBuffer.wrap(frameBytes), log);
     }
 
+    private QuicFrame parseMultipathFrame(long type, ByteBuffer buffer, Logger log) throws InvalidIntegerEncodingException, TransportError {
+        if (type == NewConnectionIdFrame.PATH_NEW_CONNECTION_ID) {
+            return new NewConnectionIdFrame(quicVersion).parse(buffer, log);
+        }
+        if (type == RetireConnectionIdFrame.PATH_RETIRE_CONNECTION_ID) {
+            return new RetireConnectionIdFrame(quicVersion).parse(buffer, log);
+        }
+        if (type == PathAbandonFrame.TYPE) {
+            return new PathAbandonFrame().parse(buffer, log);
+        }
+        if (type == PathStatusFrame.TYPE_BACKUP || type == PathStatusFrame.TYPE_AVAILABLE) {
+            return new PathStatusFrame().parse(buffer, log);
+        }
+        if (type == MaxPathIdFrame.TYPE) {
+            return new MaxPathIdFrame().parse(buffer, log);
+        }
+        if (type == PathsBlockedFrame.TYPE) {
+            return new PathsBlockedFrame().parse(buffer, log);
+        }
+        if (type == PathCidsBlockedFrame.TYPE) {
+            return new PathCidsBlockedFrame().parse(buffer, log);
+        }
+        return null;
+    }
+
     protected void parseFrames(ByteBuffer buffer, Logger log) throws InvalidPacketException, TransportError {
 
         int frameType = -1;
@@ -360,6 +385,11 @@ abstract public class QuicPacket {
                         frames.add(new ObservedAddressFrame().parse(buffer, log));
                         continue;
                     }
+                    QuicFrame multipathFrame = parseMultipathFrame(longFrameType, buffer, log);
+                    if (multipathFrame != null) {
+                        frames.add(multipathFrame);
+                        continue;
+                    }
                     throw new TransportError(QuicConstants.TransportErrorCode.FRAME_ENCODING_ERROR);
                 }
                 switch (frameType) {
@@ -371,6 +401,8 @@ abstract public class QuicPacket {
                         break;
                     case 0x02:
                     case 0x03:
+                    case 0x3e:
+                    case 0x3f:
                         frames.add(new AckFrame().parse(buffer, log));
                         break;
                     case 0x04:

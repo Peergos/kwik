@@ -38,7 +38,11 @@ import java.util.Random;
  */
 public class NewConnectionIdFrame extends QuicFrame {
 
+    public static final long PATH_NEW_CONNECTION_ID = 0x3e78;
+
     private Version quicVersion;
+    // For a PATH_NEW_CONNECTION_ID frame (draft-ietf-quic-multipath); -1 for a NEW_CONNECTION_ID frame.
+    private long pathId = -1;
     private int sequenceNr;
     private int retirePriorTo;
     private byte[] connectionId;
@@ -58,16 +62,31 @@ public class NewConnectionIdFrame extends QuicFrame {
         random.nextBytes(statelessResetToken);
     }
 
+    /**
+     * Creates a PATH_NEW_CONNECTION_ID frame for the given path.
+     */
+    public NewConnectionIdFrame(Version quicVersion, long pathId, int sequenceNr, int retirePriorTo, byte[] newSourceConnectionId) {
+        this(quicVersion, sequenceNr, retirePriorTo, newSourceConnectionId);
+        this.pathId = pathId;
+    }
+
     @Override
     public int getFrameLength() {
-        return 1 + VariableLengthInteger.bytesNeeded(sequenceNr)
+        return (pathId >= 0? VariableLengthInteger.bytesNeeded(PATH_NEW_CONNECTION_ID) + VariableLengthInteger.bytesNeeded(pathId): 1)
+                + VariableLengthInteger.bytesNeeded(sequenceNr)
                 + VariableLengthInteger.bytesNeeded(retirePriorTo)
                 + 1 + connectionId.length + 16;
     }
 
     @Override
     public void serialize(ByteBuffer buffer) {
-        buffer.put((byte) 0x18);
+        if (pathId >= 0) {
+            VariableLengthInteger.encode(PATH_NEW_CONNECTION_ID, buffer);
+            VariableLengthInteger.encode(pathId, buffer);
+        }
+        else {
+            buffer.put((byte) 0x18);
+        }
         VariableLengthInteger.encode(sequenceNr, buffer);
         VariableLengthInteger.encode(retirePriorTo, buffer);
         buffer.put((byte) connectionId.length);
@@ -76,7 +95,9 @@ public class NewConnectionIdFrame extends QuicFrame {
     }
 
     public NewConnectionIdFrame parse(ByteBuffer buffer, Logger log) throws InvalidIntegerEncodingException, TransportError {
-        buffer.get();
+        if (VariableLengthInteger.parseLong(buffer) == PATH_NEW_CONNECTION_ID) {
+            pathId = VariableLengthInteger.parseLong(buffer);
+        }
 
         sequenceNr = parseVariableLengthIntegerLimitedToInt(buffer);  // Kwik does not support sequence number larger than max int.
         retirePriorTo = parseVariableLengthIntegerLimitedToInt(buffer);
@@ -97,7 +118,14 @@ public class NewConnectionIdFrame extends QuicFrame {
 
     @Override
     public String toString() {
-        return "NewConnectionIdFrame[" + sequenceNr + ",<" + retirePriorTo + "|" + Bytes.bytesToHex(connectionId) + "|" + Bytes.bytesToHex(statelessResetToken) + "]";
+        return "NewConnectionIdFrame[" + (pathId >= 0? "path " + pathId + ",": "") + sequenceNr + ",<" + retirePriorTo + "|" + Bytes.bytesToHex(connectionId) + "|" + Bytes.bytesToHex(statelessResetToken) + "]";
+    }
+
+    /**
+     * The path ID of a PATH_NEW_CONNECTION_ID frame, or -1 for a NEW_CONNECTION_ID frame.
+     */
+    public long getPathId() {
+        return pathId;
     }
 
     public int getSequenceNr() {

@@ -368,6 +368,7 @@ public class QuicClientConnectionImpl extends QuicConnectionImpl implements Quic
         }
 
         parameters.setAddressDiscoveryRole(getAddressDiscoveryRole());
+        parameters.setInitialMaxPathId(getLocalMaxPathId());
 
         return parameters;
     }
@@ -854,6 +855,9 @@ public class QuicClientConnectionImpl extends QuicConnectionImpl implements Quic
 
     @Override
     public void process(RetireConnectionIdFrame retireConnectionIdFrame, QuicPacket packet, PacketMetaData metaData) {
+        if (!forInitialPath(retireConnectionIdFrame.getPathId())) {
+            return;
+        }
         connectionIdManager.process(retireConnectionIdFrame, packet.getDestinationConnectionId());
     }
 
@@ -1515,6 +1519,7 @@ public class QuicClientConnectionImpl extends QuicConnectionImpl implements Quic
         private KeyPair clientRawPublicKey;
         private SharedEndpoint sharedEndpoint;
         private boolean sendObservedAddress;
+        private long multipathMaxPathId = -1;
         private boolean receiveObservedAddress;
 
         private BuilderImpl() {
@@ -1563,6 +1568,9 @@ public class QuicClientConnectionImpl extends QuicConnectionImpl implements Quic
                 quicConnection.useRawPublicKeys(serverRawPublicKeyVerifier, clientRawPublicKey);
             }
 
+            if (multipathMaxPathId >= 0) {
+                quicConnection.enableMultipath(multipathMaxPathId);
+            }
             if (sendObservedAddress || receiveObservedAddress) {
                 quicConnection.enableAddressDiscovery(sendObservedAddress, receiveObservedAddress);
             }
@@ -1884,6 +1892,12 @@ public class QuicClientConnectionImpl extends QuicConnectionImpl implements Quic
         @Override
         public Builder clientRawPublicKey(KeyPair keyPair) {
             this.clientRawPublicKey = keyPair;
+            return this;
+        }
+
+        @Override
+        public Builder multipath(long maxPathId) {
+            this.multipathMaxPathId = maxPathId;
             return this;
         }
 

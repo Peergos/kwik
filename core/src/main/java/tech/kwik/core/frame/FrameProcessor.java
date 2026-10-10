@@ -52,6 +52,21 @@ public interface FrameProcessor {
 
     void process(StreamsBlockedFrame streamsBlockedFrame, QuicPacket packet, PacketMetaData metaData);
 
+    default void process(PathAbandonFrame pathAbandonFrame, QuicPacket packet, PacketMetaData metaData) {
+    }
+
+    default void process(PathStatusFrame pathStatusFrame, QuicPacket packet, PacketMetaData metaData) {
+    }
+
+    default void process(MaxPathIdFrame maxPathIdFrame, QuicPacket packet, PacketMetaData metaData) {
+    }
+
+    default void process(PathsBlockedFrame pathsBlockedFrame, QuicPacket packet, PacketMetaData metaData) {
+    }
+
+    default void process(PathCidsBlockedFrame pathCidsBlockedFrame, QuicPacket packet, PacketMetaData metaData) {
+    }
+
     default void process(ObservedAddressFrame observedAddressFrame, QuicPacket packet, PacketMetaData metaData) {
     }
 }

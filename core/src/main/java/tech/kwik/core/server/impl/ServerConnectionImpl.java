@@ -414,6 +414,10 @@ public class ServerConnectionImpl extends QuicConnectionImpl implements ServerCo
             enableReliableStreamReset();
         }
 
+        if (configuration.multipathMaxPathId() >= 0) {
+            enableMultipath(configuration.multipathMaxPathId());
+        }
+
         if (protocolSettings.sendObservedAddressReports() || protocolSettings.receiveObservedAddressReports()) {
             enableAddressDiscovery(protocolSettings.sendObservedAddressReports(), protocolSettings.receiveObservedAddressReports());
         }
@@ -437,6 +441,7 @@ public class ServerConnectionImpl extends QuicConnectionImpl implements ServerCo
         }
 
         parameters.setAddressDiscoveryRole(getAddressDiscoveryRole());
+        parameters.setInitialMaxPathId(getLocalMaxPathId());
 
         return parameters;
     }
@@ -627,6 +632,9 @@ public class ServerConnectionImpl extends QuicConnectionImpl implements ServerCo
 
     @Override
     public void process(RetireConnectionIdFrame retireConnectionIdFrame, QuicPacket packet, PacketMetaData metaData) {
+        if (!forInitialPath(retireConnectionIdFrame.getPathId())) {
+            return;
+        }
         connectionIdManager.process(retireConnectionIdFrame, packet.getDestinationConnectionId());
     }
 

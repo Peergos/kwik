@@ -50,6 +50,8 @@ public class TransportParameters {
     private long maxDatagramFrameSize;
     // QUIC Address Discovery role: 0 = send only, 1 = receive only, 2 = both; null when absent
     private Integer addressDiscoveryRole;
+    // draft-ietf-quic-multipath; null when multipath is not supported.
+    private Long initialMaxPathId;
     // https://www.ietf.org/archive/id/draft-ietf-quic-reliable-stream-reset-07.html#section-3
     private boolean resetStreamAtSupport;
 
@@ -265,6 +267,14 @@ public class TransportParameters {
 
     public long getMaxDatagramFrameSize() {
         return maxDatagramFrameSize;
+    }
+
+    public Long getInitialMaxPathId() {
+        return initialMaxPathId;
+    }
+
+    public void setInitialMaxPathId(Long initialMaxPathId) {
+        this.initialMaxPathId = initialMaxPathId;
     }
 
     public Integer getAddressDiscoveryRole() {
