@@ -111,6 +111,9 @@ public class LossDetector {
         ackElicitingInFlight.getAndAdd(-1 * ackedAckEliciting);
 
         congestionController.registerAcked(filterInFlight(newlyAcked));
+        for (PacketStatus acked : newlyAcked) {
+            acked.packet().mtuProbeAcked();
+        }
 
         detectLostPackets();
 
@@ -279,7 +282,12 @@ public class LossDetector {
                 });
         postProcessLostCallback.run();
 
-        congestionController.registerLost(filterInFlight(lostPacketsInfo));
+        List<PacketStatus> lostInFlight = filterInFlight(lostPacketsInfo);
+        if (lostInFlight.stream().anyMatch(p -> p.packet().isMtuProbe())) {
+            congestionController.discard(lostInFlight.stream().filter(p -> p.packet().isMtuProbe()).collect(Collectors.toList()));
+            lostInFlight = lostInFlight.stream().filter(p -> !p.packet().isMtuProbe()).collect(Collectors.toList());
+        }
+        congestionController.registerLost(lostInFlight);
 
         // Cleanup
         lostPacketsInfo.stream().forEach(p -> packetSentLog.remove(p.packet().getPacketNumber()));

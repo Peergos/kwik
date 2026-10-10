@@ -23,6 +23,8 @@ import tech.kwik.core.cc.CongestionControlEventListener;
 import tech.kwik.core.cc.CongestionController;
 import tech.kwik.core.cc.NewRenoCongestionController;
 import tech.kwik.core.common.EncryptionLevel;
+import tech.kwik.core.impl.HandshakeStateListener;
+import tech.kwik.core.impl.HandshakeState;
 import tech.kwik.core.common.PnSpace;
 import tech.kwik.core.crypto.Aead;
 import tech.kwik.core.crypto.ConnectionSecrets;
@@ -60,6 +62,7 @@ import java.util.function.Function;
 import java.util.stream.Collectors;
 
 import static java.lang.Long.max;
+import static tech.kwik.core.common.KwikConstants.MAX_SUPPORTED_PACKET_SIZE;
 
 /**
  * Sender implementation that queues frames-to-be-sent and assembles packets "just in time" when conditions allow to
@@ -80,7 +83,7 @@ import static java.lang.Long.max;
  * - delayed ack timeout
  * - congestion controller becoming unblocked due to timer-induced loss detection
  */
-public class SenderImpl implements Sender, CongestionControlEventListener {
+public class SenderImpl implements Sender, CongestionControlEventListener, HandshakeStateListener {
 
     private final Clock clock;
     private volatile int maxPacketSize;
@@ -124,6 +127,7 @@ public class SenderImpl implements Sender, CongestionControlEventListener {
     private int deferredWakeUps;
     private boolean ackHeld;
     private byte[] batchBuffer;
+    private final MtuDiscovery mtuDiscovery;
 
 
     public SenderImpl(VersionHolder version, int maxPacketSize, SocketManager socketManager, QuicConnectionImpl connection,
@@ -152,6 +156,10 @@ public class SenderImpl implements Sender, CongestionControlEventListener {
         recoveryManager = new RecoveryManager(connection.getRole(), rttEstimater, congestionController, this, log);
         connection.addHandshakeStateListener(recoveryManager);
         connection.addAckFrameReceivedListener(recoveryManager);
+        mtuDiscovery = new MtuDiscovery(maxPacketSize, Integer.min(MtuDiscovery.DEFAULT_UPPER_BOUND, MAX_SUPPORTED_PACKET_SIZE));
+        if (maxPacketSize > 1200) {
+            connection.addHandshakeStateListener(this);
+        }
 
         globalAckGenerator = new GlobalAckGenerator(this, rttEstimater, recoveryManager);
         packetAssembler = new GlobalPacketAssembler(version, sendRequestQueue, globalAckGenerator, connection.getConnectionIdManager());
@@ -377,7 +385,40 @@ public class SenderImpl implements Sender, CongestionControlEventListener {
         sendIfAny();
     }
 
+    @Override
+    public void handshakeStateChangedEvent(HandshakeState newState) {
+        if (newState == HandshakeState.Confirmed) {
+            mtuDiscovery.enable();
+            wakeUpSenderLoop();
+        }
+    }
+
+    private void sendMtuProbeIfDue() throws IOException {
+        int size = mtuDiscovery.nextProbe();
+        if (size == 0) {
+            return;
+        }
+        Optional<AssembledDatagram> probe = Optional.empty();
+        if (congestionController.remainingCwnd() >= size) {
+            probe = packetAssembler.assembleMtuProbe(size, socketManager.getClientAddress(),
+                    lost -> {
+                        mtuDiscovery.probeLost(size);
+                        wakeUpSenderLoop();
+                    },
+                    () -> {
+                        maxPacketSize = mtuDiscovery.probeAcked(size);
+                        wakeUpSenderLoop();
+                    });
+        }
+        if (probe.isEmpty()) {
+            mtuDiscovery.probeLost(-1);
+            return;
+        }
+        send(probe.get(), size);
+    }
+
     void sendIfAny() throws IOException {
+        sendMtuProbeIfDue();
         if (socketManager.maxSegments() > 1) {
             sendBatched();
             return;
@@ -488,7 +529,11 @@ public class SenderImpl implements Sender, CongestionControlEventListener {
     }
 
     void send(AssembledDatagram assembledDatagram) throws IOException {
-        ByteBuffer buffer = ByteBuffer.wrap(new byte[maxPacketSize]);
+        send(assembledDatagram, maxPacketSize);
+    }
+
+    private void send(AssembledDatagram assembledDatagram, int bufferSize) throws IOException {
+        ByteBuffer buffer = ByteBuffer.wrap(new byte[bufferSize]);
         int size = encode(assembledDatagram, buffer);
         if (size == 0) {
             return;
@@ -667,6 +712,7 @@ public class SenderImpl implements Sender, CongestionControlEventListener {
     }
 
     public void registerMaxUdpPayloadSize(int maxUdpPayloadSize) {
+        mtuDiscovery.setUpperBound(maxUdpPayloadSize);
         if (maxUdpPayloadSize < maxPacketSize) {
             maxPacketSize = maxUdpPayloadSize;
         }

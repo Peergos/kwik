@@ -24,6 +24,7 @@ import tech.kwik.core.cid.ConnectionIdProvider;
 import tech.kwik.core.common.EncryptionLevel;
 import tech.kwik.core.common.PnSpace;
 import tech.kwik.core.frame.Padding;
+import tech.kwik.core.packet.QuicPacket;
 import tech.kwik.core.frame.PathResponseFrame;
 import tech.kwik.core.frame.QuicFrame;
 import tech.kwik.core.impl.VersionHolder;
@@ -35,7 +36,9 @@ import java.util.Arrays;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.function.Consumer;
 
+import static tech.kwik.core.common.EncryptionLevel.App;
 import static tech.kwik.core.common.EncryptionLevel.Handshake;
 import static tech.kwik.core.common.EncryptionLevel.Initial;
 import static tech.kwik.core.common.EncryptionLevel.ZeroRTT;
@@ -171,6 +174,14 @@ public class GlobalPacketAssembler {
         }
 
         return new AssembledDatagram(packets, minDatagramSize);
+    }
+
+    public Optional<AssembledDatagram> assembleMtuProbe(int size, InetSocketAddress clientAddress, Consumer<QuicPacket> lostCallback, Runnable ackedCallback) {
+        PacketAssembler assembler = packetAssembler[App.ordinal()];
+        if (assembler == null || !Arrays.asList(enabledLevels).contains(App)) {
+            return Optional.empty();
+        }
+        return Optional.of(new AssembledDatagram(List.of(assembler.assembleMtuProbe(size, clientAddress, lostCallback, ackedCallback)), 0));
     }
 
     protected int addPadding(List<SendItem> packets, int currentEstimatedSize, int requiredMinimumSize) {

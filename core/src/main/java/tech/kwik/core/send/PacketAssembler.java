@@ -22,6 +22,7 @@ import tech.kwik.core.ack.AckGenerator;
 import tech.kwik.core.cid.ConnectionIdProvider;
 import tech.kwik.core.common.EncryptionLevel;
 import tech.kwik.core.frame.AckFrame;
+import tech.kwik.core.frame.Padding;
 import tech.kwik.core.frame.PingFrame;
 import tech.kwik.core.frame.QuicFrame;
 import tech.kwik.core.frame.RetireConnectionIdFrame;
@@ -228,6 +229,19 @@ public class PacketAssembler {
         }
 
         return assembledItem;
+    }
+
+    /**
+     * Assembles a PING packet padded to exactly the given size, for path MTU discovery.
+     */
+    SendItem assembleMtuProbe(int size, InetSocketAddress clientAddress, Consumer<QuicPacket> lostCallback, Runnable ackedCallback) {
+        QuicPacket packet = createPacket(clientAddress);
+        packet.addFrame(new PingFrame());
+        int padding = size - packet.estimateLength(0);
+        padding -= packet.estimateLength(padding) - size;
+        packet.addFrame(new Padding(padding));
+        packet.setMtuProbe(ackedCallback);
+        return new SendItem(packet, lostCallback, clientAddress);
     }
 
     protected long nextPacketNumber() {

@@ -183,8 +183,8 @@ public abstract class QuicConnectionImpl implements QuicConnection, PacketProces
         currentEncryptionLevel = Initial;
     }
 
-    public void addHandshakeStateListener(RecoveryManager recoveryManager) {
-        handshakeStateListeners.add(recoveryManager);
+    public void addHandshakeStateListener(HandshakeStateListener listener) {
+        handshakeStateListeners.add(listener);
     }
 
     /**

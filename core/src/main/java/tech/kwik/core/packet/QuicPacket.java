@@ -44,6 +44,7 @@ abstract public class QuicPacket {
     protected int packetSize = -1;
     protected byte[] destinationConnectionId;
     protected boolean isProbe;
+    private Runnable mtuProbeAcked;
 
     public QuicPacket() {
         frames = new ArrayList<>();
@@ -628,6 +629,23 @@ abstract public class QuicPacket {
 
     public void setIsProbe(boolean probe) {
         isProbe = probe;
+    }
+
+    /**
+     * Marks this packet as a path MTU probe; its loss is not a congestion signal.
+     */
+    public void setMtuProbe(Runnable onAcked) {
+        mtuProbeAcked = onAcked;
+    }
+
+    public boolean isMtuProbe() {
+        return mtuProbeAcked != null;
+    }
+
+    public void mtuProbeAcked() {
+        if (mtuProbeAcked != null) {
+            mtuProbeAcked.run();
+        }
     }
 
     public Version getVersion() {
