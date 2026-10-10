@@ -22,6 +22,7 @@ import org.junit.jupiter.api.Test;
 import tech.kwik.core.frame.*;
 import tech.kwik.core.impl.Version;
 import tech.kwik.core.log.NullLogger;
+import tech.kwik.core.test.ByteUtils;
 
 import java.nio.ByteBuffer;
 import java.util.List;
@@ -75,6 +76,14 @@ class MultipathFramesTest {
         assertThat(((MaxPathIdFrame) parsed.get(6)).getMaxPathId()).isEqualTo(17);
         assertThat(((PathsBlockedFrame) parsed.get(7)).getMaxPathId()).isEqualTo(17);
         assertThat(((PathCidsBlockedFrame) parsed.get(8)).getNextSequenceNumber()).isEqualTo(3);
+    }
+
+    @Test
+    void nonceShouldIncludePathId() {
+        // https://www.ietf.org/archive/id/draft-ietf-quic-multipath-21.html#section-2.4, figure 3
+        byte[] iv = ByteUtils.hexToBytes("6b26114b9cba2b63a9e8dd4f");
+        assertThat(QuicPacket.nonce(iv, 3, 54321)).isEqualTo(ByteUtils.hexToBytes("6b2611489cba2b63a9e8097e"));
+        assertThat(QuicPacket.nonce(iv, 0, 54321)).isEqualTo(ByteUtils.hexToBytes("6b26114b9cba2b63a9e8097e"));
     }
 
     @Test

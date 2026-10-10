@@ -30,6 +30,8 @@ import tech.kwik.core.crypto.ConnectionSecrets;
 import tech.kwik.core.crypto.CryptoStream;
 import tech.kwik.core.frame.*;
 import tech.kwik.core.log.Logger;
+import tech.kwik.core.packet.PacketParser;
+import tech.kwik.core.path.PathManager;
 import tech.kwik.core.packet.BasePacketFilter;
 import tech.kwik.core.packet.PacketFilter;
 import tech.kwik.core.packet.PacketMetaData;
@@ -70,6 +72,7 @@ public abstract class QuicConnectionImpl implements QuicConnection, PacketProces
     // draft-ietf-quic-multipath: the maximum path IDs each side allows; null when it does not support multipath.
     private volatile Long localMaxPathId;
     private volatile Long peerMaxPathId;
+    private volatile PathManager pathManager;
     private volatile Integer addressDiscoveryRole;
     private volatile Integer peerAddressDiscoveryRole;
     private volatile long nextObservedAddressSequenceNumber;
@@ -440,6 +443,23 @@ public abstract class QuicConnectionImpl implements QuicConnection, PacketProces
     }
 
     /**
+     * The multipath state, or null when multipath was not negotiated.
+     */
+    public PathManager getPathManager() {
+        return pathManager;
+    }
+
+    /**
+     * Resolves the paths of received 1-RTT packets once multipath is negotiated.
+     */
+    protected PacketParser.PathResolver pathResolver() {
+        return (data, offset, length) -> {
+            PathManager manager = pathManager;
+            return manager != null? manager.resolve(data, offset, length): 0;
+        };
+    }
+
+    /**
      * Checks the path ID of a received multipath frame; returns whether the frame applies to the initial path (path
      * ID 0), which is the only one used so far. Other path IDs are ignored, or close the connection when invalid.
      */
@@ -485,6 +505,7 @@ public abstract class QuicConnectionImpl implements QuicConnection, PacketProces
         }
         if (maxPathIdFrame.getMaxPathId() > peerMaxPathId) {
             peerMaxPathId = maxPathIdFrame.getMaxPathId();
+            pathManager.peerMaxPathIdIncreased(maxPathIdFrame.getMaxPathId());
         }
     }
 
@@ -503,6 +524,16 @@ public abstract class QuicConnectionImpl implements QuicConnection, PacketProces
     protected void processCommonTransportParameters(TransportParameters peerTransportParams) {
         peerAddressDiscoveryRole = peerTransportParams.getAddressDiscoveryRole();
         peerMaxPathId = peerTransportParams.getInitialMaxPathId();
+        if (isMultipathEnabled()) {
+            PathManager manager = new PathManager(localMaxPathId, peerMaxPathId, getConnectionIdManager(), getSender(),
+                    (error, reason) -> immediateCloseWithError(error, reason));
+            pathManager = manager;
+            addHandshakeStateListener(state -> {
+                if (state == HandshakeState.Confirmed) {
+                    manager.startIssuingConnectionIds();
+                }
+            });
+        }
         getStreamManager().setInitialMaxStreamsBidi(peerTransportParams.getInitialMaxStreamsBidi());
         getStreamManager().setInitialMaxStreamsUni(peerTransportParams.getInitialMaxStreamsUni());
 
@@ -655,6 +686,9 @@ public abstract class QuicConnectionImpl implements QuicConnection, PacketProces
     @Override
     public void process(NewConnectionIdFrame newConnectionIdFrame, QuicPacket packet, PacketMetaData metaData) {
         if (!forInitialPath(newConnectionIdFrame.getPathId())) {
+            if (isMultipathEnabled() && newConnectionIdFrame.getPathId() > 0 && newConnectionIdFrame.getPathId() <= localMaxPathId) {
+                pathManager.process(newConnectionIdFrame);
+            }
             return;
         }
         getConnectionIdManager().process(newConnectionIdFrame);

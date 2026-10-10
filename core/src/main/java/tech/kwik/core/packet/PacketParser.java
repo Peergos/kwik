@@ -26,6 +26,8 @@ import tech.kwik.core.impl.*;
 import tech.kwik.core.log.Logger;
 
 import java.nio.ByteBuffer;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.Map;
 import java.util.function.BiFunction;
 
 public abstract class PacketParser {
@@ -39,6 +41,20 @@ public abstract class PacketParser {
     protected long[] largestPacketNumber;
     private BiFunction<ByteBuffer, Exception, Boolean> handleUnprotectPacketFailureFunction;
     private Object preParsed;
+    private volatile PathResolver pathResolver;
+    // Largest received packet number of each path other than path 0, whose largest is in largestPacketNumber.
+    private final Map<Long, long[]> largestPacketNumberByPath = new ConcurrentHashMap<>();
+
+    /**
+     * Maps the destination connection ID of a received 1-RTT packet to the multipath path ID it belongs to.
+     */
+    public interface PathResolver {
+        long pathId(ByteBuffer data, int offset, int length);
+    }
+
+    public void setPathResolver(PathResolver pathResolver) {
+        this.pathResolver = pathResolver;
+    }
 
 
     public PacketParser(ConnectionSecrets secrets, VersionHolder quicVersion, int cidLength, PacketFilter processor, Role role, Logger logger) {
@@ -199,6 +215,14 @@ public abstract class PacketParser {
         if (packet.getEncryptionLevel() != null) {
             Aead aead = getAead(packet, data);
             long largestPN = packet.getPnSpace() != null? largestPacketNumber[packet.getPnSpace().ordinal()]: 0;
+            PathResolver resolver = pathResolver;
+            if (resolver != null && packet instanceof ShortHeaderPacket && data.remaining() > 1 + cidLength) {
+                long pathId = resolver.pathId(data, data.position() + 1, cidLength);
+                packet.setPathId(pathId);
+                if (pathId != 0) {
+                    largestPN = largestPacketNumberByPath.computeIfAbsent(pathId, id -> new long[1])[0];
+                }
+            }
             // Cipher objects and key update state are not thread safe; see preParse.
             synchronized (aead) {
                 packet.parse(data, aead, largestPN, log, cidLength);
@@ -210,7 +234,13 @@ public abstract class PacketParser {
         }
 
         // Only retry packet and version negotiation packet won't have a packet number.
-        if (packet.getPacketNumber() != null && packet.getPacketNumber() > largestPacketNumber[packet.getPnSpace().ordinal()]) {
+        if (packet.getPathId() != 0) {
+            long[] largest = largestPacketNumberByPath.get(packet.getPathId());
+            if (packet.getPacketNumber() > largest[0]) {
+                largest[0] = packet.getPacketNumber();
+            }
+        }
+        else if (packet.getPacketNumber() != null && packet.getPacketNumber() > largestPacketNumber[packet.getPnSpace().ordinal()]) {
             largestPacketNumber[packet.getPnSpace().ordinal()] = packet.getPacketNumber();
         }
         return packet;

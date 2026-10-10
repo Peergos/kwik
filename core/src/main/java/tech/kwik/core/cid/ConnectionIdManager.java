@@ -32,6 +32,10 @@ import java.net.InetSocketAddress;
 import java.security.SecureRandom;
 import java.util.Arrays;
 import java.util.List;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.Set;
+import java.util.ArrayList;
+import java.nio.ByteBuffer;
 import java.util.Map;
 import java.util.function.BiConsumer;
 import java.util.stream.Stream;
@@ -50,6 +54,9 @@ public class ConnectionIdManager implements ConnectionIdProvider {
 
     public static final int MAX_CIDS_PER_CONNECTION = 6;
 
+    // Connection IDs issued for multipath paths other than path 0; see newPathConnectionId.
+    private final Set<ByteBuffer> pathConnectionIds = ConcurrentHashMap.newKeySet();
+
     private final int connectionIdLength;
     private ServerConnectionRegistry connectionRegistry;
     private volatile Sender sender;
@@ -66,6 +73,7 @@ public class ConnectionIdManager implements ConnectionIdProvider {
     private volatile byte[] retrySourceCid;
     private final Version quicVersion = Version.QUIC_version_1;
     private final Role role;
+    private static final SecureRandom PATH_CID_RANDOM = new SecureRandom();
 
     /**
      * Creates a connection ID manager for server role.
@@ -149,6 +157,31 @@ public class ConnectionIdManager implements ConnectionIdProvider {
      * Sets the registry that is notified of connection IDs this (client) endpoint issues and retires; used to route
      * incoming datagrams when the client shares its endpoint (see {@link tech.kwik.core.socket.SharedEndpoint}).
      */
+    /**
+     * Generates a connection ID for a multipath path other than path 0, and registers it so packets carrying it reach
+     * this connection.
+     */
+    public byte[] newPathConnectionId() {
+        byte[] connectionId = new byte[connectionIdLength];
+        PATH_CID_RANDOM.nextBytes(connectionId);
+        pathConnectionIds.add(ByteBuffer.wrap(connectionId));
+        connectionRegistry.registerAdditionalConnectionId(cidRegistry.getActive(), connectionId);
+        return connectionId;
+    }
+
+    public void releasePathConnectionId(byte[] connectionId) {
+        if (pathConnectionIds.remove(ByteBuffer.wrap(connectionId))) {
+            connectionRegistry.deregisterConnectionId(connectionId);
+        }
+    }
+
+    /**
+     * The maximum number of connection IDs to issue per path; the peer's active_connection_id_limit applies per path.
+     */
+    public int getMaxConnectionIdsPerPath() {
+        return maxCids;
+    }
+
     public void setConnectionRegistry(ServerConnectionRegistry connectionRegistry) {
         assert role == Client;
         this.connectionRegistry = connectionRegistry;
@@ -310,7 +343,12 @@ public class ConnectionIdManager implements ConnectionIdProvider {
      * @return  all active connection IDs
      */
     public List<byte[]> getActiveConnectionIds() {
-        return cidRegistry.getActiveConnectionIds();
+        if (pathConnectionIds.isEmpty()) {
+            return cidRegistry.getActiveConnectionIds();
+        }
+        List<byte[]> all = new ArrayList<>(cidRegistry.getActiveConnectionIds());
+        pathConnectionIds.forEach(cid -> all.add(cid.array()));
+        return all;
     }
 
     public List<byte[]> getActivePeerConnectionIds() {
@@ -530,7 +568,7 @@ public class ConnectionIdManager implements ConnectionIdProvider {
      * @return
      */
     public boolean isActiveCid(byte[] cid) {
-        return cidRegistry.isActive(cid);
+        return cidRegistry.isActive(cid) || (!pathConnectionIds.isEmpty() && pathConnectionIds.contains(ByteBuffer.wrap(cid)));
     }
 
     public int getCurrentPeerConnectionIdLength() {

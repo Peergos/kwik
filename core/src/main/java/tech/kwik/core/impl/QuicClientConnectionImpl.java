@@ -521,6 +521,7 @@ public class QuicClientConnectionImpl extends QuicConnectionImpl implements Quic
         parser = new ClientRolePacketParser(connectionSecrets, quicVersion, connectionIdManager.getConnectionIdLength(),
                 connectionIdManager.getOriginalDestinationConnectionId(),
                 createProcessorChain(), this::handleUnprotectPacketFailure, log);
+        parser.setPathResolver(pathResolver());
         DatagramFilter datagramProcessingChain = new DatagramPostProcessingFilter(this::datagramProcessed,
                 new DatagramParserFilter(parser));
 
@@ -856,6 +857,9 @@ public class QuicClientConnectionImpl extends QuicConnectionImpl implements Quic
     @Override
     public void process(RetireConnectionIdFrame retireConnectionIdFrame, QuicPacket packet, PacketMetaData metaData) {
         if (!forInitialPath(retireConnectionIdFrame.getPathId())) {
+            if (isMultipathEnabled() && retireConnectionIdFrame.getPathId() > 0 && retireConnectionIdFrame.getPathId() <= getLocalMaxPathId()) {
+                getPathManager().process(retireConnectionIdFrame, packet.getDestinationConnectionId());
+            }
             return;
         }
         connectionIdManager.process(retireConnectionIdFrame, packet.getDestinationConnectionId());

@@ -207,8 +207,10 @@ public class ServerConnectionImpl extends QuicConnectionImpl implements ServerCo
     }
 
     PacketParser createParser() {
-        return new ServerRolePacketParser(connectionSecrets, quicVersion, getSourceConnectionIdLength(), retryRequired,
+        PacketParser parser = new ServerRolePacketParser(connectionSecrets, quicVersion, getSourceConnectionIdLength(), retryRequired,
                 processorChain, () -> versionNegotiationStatus, log);
+        parser.setPathResolver(pathResolver());
+        return parser;
     }
 
     @Override
@@ -633,6 +635,9 @@ public class ServerConnectionImpl extends QuicConnectionImpl implements ServerCo
     @Override
     public void process(RetireConnectionIdFrame retireConnectionIdFrame, QuicPacket packet, PacketMetaData metaData) {
         if (!forInitialPath(retireConnectionIdFrame.getPathId())) {
+            if (isMultipathEnabled() && retireConnectionIdFrame.getPathId() > 0 && retireConnectionIdFrame.getPathId() <= getLocalMaxPathId()) {
+                getPathManager().process(retireConnectionIdFrame, packet.getDestinationConnectionId());
+            }
             return;
         }
         connectionIdManager.process(retireConnectionIdFrame, packet.getDestinationConnectionId());

@@ -45,6 +45,8 @@ abstract public class QuicPacket {
     protected int packetSize = -1;
     protected byte[] destinationConnectionId;
     protected boolean isProbe;
+    // The multipath path ID (draft-ietf-quic-multipath); 0 for the initial path and without multipath.
+    protected long pathId;
     private Runnable mtuProbeAcked;
 
     public QuicPacket() {
@@ -242,10 +244,7 @@ abstract public class QuicPacket {
         if (this instanceof ShortHeaderPacket) {
             aead.checkKeyPhase(((ShortHeaderPacket) this).keyPhaseBit);
         }
-        byte[] nonce = aead.getIv().clone();
-        for (int i = 0; i < 8; i++) {
-            nonce[nonce.length - 1 - i] ^= (byte) (packetNumber >> (8 * i));
-        }
+        byte[] nonce = nonce(aead.getIv(), pathId, packetNumber);
         byte[] data = buffer.array();
         int base = buffer.arrayOffset();
         int plainLength = aead.aeadDecrypt(data, base + packetStartPosition, payloadStartPosition - packetStartPosition,
@@ -278,6 +277,29 @@ abstract public class QuicPacket {
         return aead.createHeaderProtectionMask(sample);
     }
 
+    /**
+     * The AEAD nonce: the IV XOR the packet number and, with multipath, the path ID
+     * (https://www.ietf.org/archive/id/draft-ietf-quic-multipath-21.html#section-2.4). Path 0 gives the single-path nonce.
+     */
+    static byte[] nonce(byte[] iv, long pathId, long packetNumber) {
+        byte[] nonce = iv.clone();
+        for (int i = 0; i < 8; i++) {
+            nonce[nonce.length - 1 - i] ^= (byte) (packetNumber >> (8 * i));
+        }
+        for (int i = 0; i < 4; i++) {
+            nonce[nonce.length - 9 - i] ^= (byte) (pathId >> (8 * i));
+        }
+        return nonce;
+    }
+
+    public long getPathId() {
+        return pathId;
+    }
+
+    public void setPathId(long pathId) {
+        this.pathId = pathId;
+    }
+
     byte[] encryptPayload(byte[] message, byte[] associatedData, long packetNumber, Aead aead) {
 
         // From https://tools.ietf.org/html/draft-ietf-quic-tls-16#section-5.3:
@@ -286,36 +308,16 @@ abstract public class QuicPacket {
         //   reconstructed QUIC packet number in network byte order are left-
         //   padded with zeros to the size of the IV.  The exclusive OR of the
         //   padded packet number and the IV forms the AEAD nonce"
-        byte[] writeIV = aead.getIv();
-        ByteBuffer nonceInput = ByteBuffer.allocate(writeIV.length);
-        for (int i = 0; i < nonceInput.capacity() - 8; i++)
-            nonceInput.put((byte) 0x00);
-        nonceInput.putLong(packetNumber);
-
-        byte[] nonce = new byte[12];
-        int i = 0;
-        for (byte b : nonceInput.array())
-            nonce[i] = (byte) (b ^ writeIV[i++]);
-
+        byte[] nonce = nonce(aead.getIv(), pathId, packetNumber);
         return aead.aeadEncrypt(associatedData, message, nonce);
     }
 
     byte[] decryptPayload(byte[] message, byte[] associatedData, long packetNumber, Aead aead) throws DecryptionException {
-        ByteBuffer nonceInput = ByteBuffer.allocate(12);
-        nonceInput.putInt(0);
-        nonceInput.putLong(packetNumber);
-
         if (this instanceof ShortHeaderPacket) {
             aead.checkKeyPhase(((ShortHeaderPacket) this).keyPhaseBit);
         }
 
-        byte[] writeIV = aead.getIv();
-        byte[] nonce = new byte[12];
-        int i = 0;
-        for (byte b : nonceInput.array())
-            nonce[i] = (byte) (b ^ writeIV[i++]);
-
-        return aead.aeadDecrypt(associatedData, message, nonce);
+        return aead.aeadDecrypt(associatedData, message, nonce(aead.getIv(), pathId, packetNumber));
     }
 
     static long decodePacketNumber(long truncatedPacketNumber, long largestPacketNumber, int bits) {
@@ -561,11 +563,7 @@ abstract public class QuicPacket {
     protected int protectInPlace(ByteBuffer buffer, int start, int payloadStart, int packetNumberLength, Aead aead) {
         byte[] data = buffer.array();
         int base = buffer.arrayOffset();
-        byte[] iv = aead.getIv();
-        byte[] nonce = iv.clone();
-        for (int i = 0; i < 8; i++) {
-            nonce[nonce.length - 1 - i] ^= (byte) (packetNumber >> (8 * i));
-        }
+        byte[] nonce = nonce(aead.getIv(), pathId, packetNumber);
         int encrypted = aead.aeadEncrypt(data, base + start, payloadStart - start, base + payloadStart, buffer.position() - payloadStart, nonce);
         buffer.position(payloadStart + encrypted);
 
