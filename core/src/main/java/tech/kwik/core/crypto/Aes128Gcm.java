@@ -14,6 +14,7 @@ import javax.crypto.IllegalBlockSizeException;
 import javax.crypto.NoSuchPaddingException;
 import javax.crypto.spec.GCMParameterSpec;
 import javax.crypto.spec.SecretKeySpec;
+import java.security.GeneralSecurityException;
 import java.security.InvalidAlgorithmParameterException;
 import java.security.InvalidKeyException;
 import java.security.NoSuchAlgorithmException;
@@ -120,6 +121,20 @@ public class Aes128Gcm extends BaseAeadImpl {
                  BadPaddingException e) {
             // Programming error
             throw new RuntimeException();
+        }
+    }
+
+    @Override
+    public int aeadEncrypt(byte[] buffer, int aadOffset, int aadLength, int offset, int length, byte[] nonce) {
+        Cipher aeadCipher = getCipher();
+        try {
+            aeadCipher.init(Cipher.ENCRYPT_MODE, getKeySpec(), new GCMParameterSpec(128, nonce));
+            aeadCipher.updateAAD(buffer, aadOffset, aadLength);
+            return aeadCipher.doFinal(buffer, offset, length, buffer, offset);
+        }
+        catch (GeneralSecurityException e) {
+            // Programming error
+            throw new RuntimeException(e);
         }
     }
 

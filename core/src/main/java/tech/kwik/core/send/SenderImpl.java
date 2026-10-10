@@ -555,10 +555,19 @@ public class SenderImpl implements Sender, CongestionControlEventListener, Hands
                 QuicPacket packet = packetIterator.next().getPacket();
                 try {
                     Aead aead = connectionSecrets.getOwnAead(packet.getEncryptionLevel());
-                    byte[] packetData = packet.generatePacketBytes(aead);
-                    buffer.put(packetData);
-                    if (log.logRaw()) {
-                        log.raw("packet sent, pn: " + packet.getPacketNumber(), packetData);
+                    if (packet instanceof ShortHeaderPacket && buffer.hasArray()) {
+                        int packetStart = buffer.position();
+                        ((ShortHeaderPacket) packet).generatePacketBytes(aead, buffer);
+                        if (log.logRaw()) {
+                            log.raw("packet sent, pn: " + packet.getPacketNumber(), Arrays.copyOfRange(buffer.array(), buffer.arrayOffset() + packetStart, buffer.arrayOffset() + buffer.position()));
+                        }
+                    }
+                    else {
+                        byte[] packetData = packet.generatePacketBytes(aead);
+                        buffer.put(packetData);
+                        if (log.logRaw()) {
+                            log.raw("packet sent, pn: " + packet.getPacketNumber(), packetData);
+                        }
                     }
                 }
                 catch (MissingKeysException e) {

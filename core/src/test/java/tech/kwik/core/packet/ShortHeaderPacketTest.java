@@ -24,8 +24,15 @@ import tech.kwik.core.crypto.Aead;
 import tech.kwik.core.frame.PingFrame;
 import tech.kwik.core.frame.StreamFrame;
 import org.junit.jupiter.api.Test;
+import tech.kwik.core.impl.Role;
+import tech.kwik.core.crypto.Aes128Gcm;
+import tech.kwik.core.log.Logger;
+
+import java.nio.ByteBuffer;
+import java.util.Arrays;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.Mockito.mock;
 
 class ShortHeaderPacketTest {
 
@@ -39,6 +46,29 @@ class ShortHeaderPacketTest {
 
         // If it gets here, it is already sure the encryption succeeded.
         assertThat(shortHeaderPacket.getFrames()).hasAtLeastOneElementOfType(PingFrame.class);
+    }
+
+    @Test
+    void generatingIntoBufferShouldGiveSameBytesAsGeneratingArray() throws Exception {
+        byte[] destinationConnectionId = { 0x0e, 0x0b, 0x02, 0x0f, 0x0a, 0x04, 0x02, 0x0d };
+        for (long packetNumber : new long[] { 1, 300, 70000, 20_000_000 }) {
+            ShortHeaderPacket packet = new ShortHeaderPacket(Version.getDefault(), destinationConnectionId, new StreamFrame(1, new byte[1000], true));
+            packet.setPacketNumber(packetNumber);
+            byte[] expected = packet.generatePacketBytes(realKeys());
+
+            ShortHeaderPacket same = new ShortHeaderPacket(Version.getDefault(), destinationConnectionId, new StreamFrame(1, new byte[1000], true));
+            same.setPacketNumber(packetNumber);
+            ByteBuffer buffer = ByteBuffer.allocate(1500);
+            buffer.position(7);
+            int length = same.generatePacketBytes(realKeys(), buffer);
+
+            assertThat(length).isEqualTo(expected.length);
+            assertThat(Arrays.copyOfRange(buffer.array(), 7, 7 + length)).isEqualTo(expected);
+        }
+    }
+
+    private static Aead realKeys() {
+        return new Aes128Gcm(Version.getDefault(), Role.Client, true, new byte[32], null, mock(Logger.class));
     }
 
     @Test

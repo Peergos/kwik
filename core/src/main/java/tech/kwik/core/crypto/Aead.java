@@ -18,6 +18,8 @@
  */
 package tech.kwik.core.crypto;
 
+import java.util.Arrays;
+
 import tech.kwik.core.impl.DecryptionException;
 
 /**
@@ -34,6 +36,18 @@ public interface Aead {
     byte[] aeadEncrypt(byte[] associatedData, byte[] message, byte[] nonce);
 
     byte[] aeadDecrypt(byte[] associatedData, byte[] message, byte[] nonce) throws DecryptionException;
+
+    /**
+     * Encrypts buffer[offset, offset + length) in place, with buffer[aadOffset, aadOffset + aadLength) as associated
+     * data, and writes the tag after the ciphertext.
+     * @return the length of the ciphertext including the tag
+     */
+    default int aeadEncrypt(byte[] buffer, int aadOffset, int aadLength, int offset, int length, byte[] nonce) {
+        byte[] encrypted = aeadEncrypt(Arrays.copyOfRange(buffer, aadOffset, aadOffset + aadLength),
+                Arrays.copyOfRange(buffer, offset, offset + length), nonce);
+        System.arraycopy(encrypted, 0, buffer, offset, encrypted.length);
+        return encrypted.length;
+    }
 
     /**
      * Check whether the key phase carried by a received packet still matches the current key phase; if not, compute

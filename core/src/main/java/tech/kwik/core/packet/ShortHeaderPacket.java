@@ -206,6 +206,24 @@ public class ShortHeaderPacket extends QuicPacket {
         return packetBytes;
     }
 
+    /**
+     * Writes the protected packet to the (array backed) buffer.
+     * @return the packet length
+     */
+    public int generatePacketBytes(Aead aead, ByteBuffer buffer) {
+        assert(packetNumber >= 0);
+        int start = buffer.position();
+        keyPhaseBit = aead.getKeyPhase();
+        buffer.put(encodePacketNumberLength((byte) (0x40 | (keyPhaseBit << 2)), packetNumber));
+        buffer.put(destinationConnectionId);
+        byte[] encodedPacketNumber = encodePacketNumber(packetNumber);
+        buffer.put(encodedPacketNumber);
+        int payloadStart = buffer.position();
+        serializeFrames(buffer, encodedPacketNumber.length);
+        packetSize = protectInPlace(buffer, start, payloadStart, encodedPacketNumber.length, aead);
+        return packetSize;
+    }
+
     @Override
     public PacketProcessor.ProcessResult accept(PacketProcessor processor, PacketMetaData metaData) {
         return processor.process(this, metaData);

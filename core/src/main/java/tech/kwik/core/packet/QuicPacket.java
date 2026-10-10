@@ -32,6 +32,7 @@ import tech.kwik.core.log.Logger;
 import java.nio.BufferUnderflowException;
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 
 import static tech.kwik.core.common.KwikConstants.MAX_SUPPORTED_PACKET_SIZE;
@@ -464,6 +465,47 @@ abstract public class QuicPacket {
         }
         frameBytes.flip();
         return frameBytes;
+    }
+
+    /**
+     * Serializes the frames into the buffer, padding as needed for the header protection sample.
+     */
+    protected void serializeFrames(ByteBuffer buffer, int encodedPacketNumberLength) {
+        int begin = buffer.position();
+        for (QuicFrame frame : frames) {
+            frame.serialize(buffer);
+        }
+        int framesLength = buffer.position() - begin;
+        if (encodedPacketNumberLength + framesLength < 4) {
+            Padding padding = new Padding(4 - encodedPacketNumberLength - framesLength);
+            frames.add(padding);
+            padding.serialize(buffer);
+        }
+    }
+
+    /**
+     * Encrypts the payload written to the (array backed) buffer between payloadStart and its position, and applies
+     * header protection, all in place.
+     * @return the packet length
+     */
+    protected int protectInPlace(ByteBuffer buffer, int start, int payloadStart, int packetNumberLength, Aead aead) {
+        byte[] data = buffer.array();
+        int base = buffer.arrayOffset();
+        byte[] iv = aead.getIv();
+        byte[] nonce = iv.clone();
+        for (int i = 0; i < 8; i++) {
+            nonce[nonce.length - 1 - i] ^= (byte) (packetNumber >> (8 * i));
+        }
+        int encrypted = aead.aeadEncrypt(data, base + start, payloadStart - start, base + payloadStart, buffer.position() - payloadStart, nonce);
+        buffer.position(payloadStart + encrypted);
+
+        int packetNumberOffset = base + payloadStart - packetNumberLength;
+        byte[] mask = aead.createHeaderProtectionMask(Arrays.copyOfRange(data, packetNumberOffset + 4, packetNumberOffset + 20));
+        for (int i = 0; i < packetNumberLength; i++) {
+            data[packetNumberOffset + i] ^= mask[1 + i];
+        }
+        data[base + start] ^= (byte) (mask[0] & ((data[base + start] & 0x80) == 0x80 ? 0x0f : 0x1f));
+        return buffer.position() - start;
     }
 
     protected void protectPacketNumberAndPayload(ByteBuffer packetBuffer, int packetNumberSize, ByteBuffer payload, int paddingSize, Aead aead) {

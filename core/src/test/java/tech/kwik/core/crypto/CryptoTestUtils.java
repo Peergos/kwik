@@ -26,6 +26,7 @@ import tech.kwik.core.test.FieldSetter;
 import javax.crypto.Cipher;
 
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
@@ -49,6 +50,7 @@ public class CryptoTestUtils {
             when(keys.getKeySpec()).thenReturn(dummyKeys.getKeySpec());
 
             when(keys.aeadEncrypt(any(), any(), any())).thenCallRealMethod();
+            when(keys.aeadEncrypt(any(byte[].class), anyInt(), anyInt(), anyInt(), anyInt(), any())).thenCallRealMethod();
             when(keys.aeadDecrypt(any(), any(), any())).thenCallRealMethod();
             when(keys.createHeaderProtectionMask(any())).thenCallRealMethod();
 
