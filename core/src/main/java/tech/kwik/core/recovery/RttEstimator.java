@@ -123,6 +123,14 @@ public class RttEstimator implements RttProvider {
     }
 
     public void ackReceived(AckFrame ack, Instant timeReceived, List<PacketStatus> newlyAcked) {
+        ackReceived(ack, timeReceived, newlyAcked, false);
+    }
+
+    /**
+     * @param largestIsNew whether the ack's largest acknowledged packet number exceeds all previously acknowledged
+     *                     ones, even when it is a packet that is not tracked (ack-only)
+     */
+    public void ackReceived(AckFrame ack, Instant timeReceived, List<PacketStatus> newlyAcked, boolean largestIsNew) {
         // https://tools.ietf.org/html/draft-ietf-quic-recovery-33#section-5.1
         // "An endpoint generates an RTT sample on receiving an ACK frame that meets the following two conditions:
         //   *  the largest acknowledged packet number is newly acknowledged, and
@@ -134,6 +142,15 @@ public class RttEstimator implements RttProvider {
             if (newlyAcked.stream().anyMatch(s -> s.packet().isAckEliciting())) {
                 addSample(timeReceived, largestAcked.get().timeSent(), ack.getAckDelay());
             }
+        }
+        else if (largestIsNew) {
+            // The largest acknowledged packet is one kwik does not track (ack-only), which on a path carrying only
+            // acks is nearly always so; sample the largest newly acknowledged ack-eliciting packet instead, without
+            // ack delay (it may not apply to that packet). Without this, such a path never gets an RTT estimate.
+            newlyAcked.stream()
+                    .filter(s -> s.packet().isAckEliciting())
+                    .max(java.util.Comparator.comparing(s -> s.packet().getPacketNumber()))
+                    .ifPresent(s -> addSample(timeReceived, s.timeSent(), 0));
         }
     }
 

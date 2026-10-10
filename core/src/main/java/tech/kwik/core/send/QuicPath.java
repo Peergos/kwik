@@ -54,6 +54,7 @@ public class QuicPath {
     private volatile State state;
     private volatile boolean peerPrefersBackup;
     private volatile boolean suspect;
+    private volatile boolean carriesData = true;
     private final SendRequestQueue requestQueue;
     private final AckGenerator ackGenerator;
     private final PacketAssembler assembler;
@@ -103,7 +104,7 @@ public class QuicPath {
 
     public void setState(State state) {
         this.state = state;
-        requestQueue.setSharedEnabled(state == State.ACTIVE && !suspect);
+        updateSharedEnabled();
     }
 
     public boolean isSuspect() {
@@ -112,7 +113,21 @@ public class QuicPath {
 
     void setSuspect(boolean suspect) {
         this.suspect = suspect;
-        requestQueue.setSharedEnabled(state == State.ACTIVE && !suspect);
+        updateSharedEnabled();
+    }
+
+    /**
+     * Whether the scheduler has this path carry stream and other shared frames.
+     */
+    void setCarriesData(boolean carriesData) {
+        if (this.carriesData != carriesData) {
+            this.carriesData = carriesData;
+            updateSharedEnabled();
+        }
+    }
+
+    private void updateSharedEnabled() {
+        requestQueue.setSharedEnabled(state == State.ACTIVE && !suspect && carriesData);
     }
 
     public boolean peerPrefersBackup() {

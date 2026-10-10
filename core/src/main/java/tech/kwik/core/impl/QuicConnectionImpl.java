@@ -468,6 +468,7 @@ public abstract class QuicConnectionImpl implements QuicConnection, PacketProces
             if (getSender().getPath(pathId) == null && !manager.isAbandoned(pathId) && manager.hasConnectionIds(pathId)) {
                 QuicPath path = getSender().addPath(pathId, peerAddress, pathConnectionIds(pathId), QuicPath.State.VALIDATING);
                 challenge(path);
+                abandonUnlessValidated(path);
                 return Optional.of(path);
             }
         }
@@ -496,6 +497,13 @@ public abstract class QuicConnectionImpl implements QuicConnection, PacketProces
     }
 
     /**
+     * The multipath paths other than path 0.
+     */
+    public java.util.Collection<QuicPath> getPaths() {
+        return getSender().getPaths();
+    }
+
+    /**
      * Receives a notification whenever a multipath path becomes active.
      */
     public void setPathListener(Consumer<QuicPath> listener) {
@@ -507,6 +515,18 @@ public abstract class QuicConnectionImpl implements QuicConnection, PacketProces
         if (listener != null) {
             callbackThread.submit(() -> listener.accept(path));
         }
+    }
+
+    // https://www.rfc-editor.org/rfc/rfc9000.html#section-8.2.4: "A value of three times the larger of the current
+    // PTO or the PTO for the new path (using kInitialRtt, as defined in [QUIC-RECOVERY]) is RECOMMENDED."
+    private void abandonUnlessValidated(QuicPath path) {
+        long timeout = 3L * Long.max(getSender().getPto(), 2 * 333);
+        scheduler.schedule(() -> {
+            if (path.getState() == QuicPath.State.VALIDATING) {
+                log.info("Path " + path.getId() + " to " + path.getPeerAddress() + " not validated; abandoning it");
+                abandonPath(path.getId(), NO_ERROR.value);
+            }
+        }, timeout, TimeUnit.MILLISECONDS);
     }
 
     private void challenge(QuicPath path) {
@@ -533,6 +553,7 @@ public abstract class QuicConnectionImpl implements QuicConnection, PacketProces
             path = getSender().addPath(packet.getPathId(), metaData.sourceAddress(), pathConnectionIds(packet.getPathId()), QuicPath.State.VALIDATING);
             log.info("Peer opened path " + path.getId() + " from " + metaData.sourceAddress());
             challenge(path);
+            abandonUnlessValidated(path);
         }
         else if (!metaData.sourceAddress().equals(path.getPeerAddress())) {
             // https://www.ietf.org/archive/id/draft-ietf-quic-multipath-21.html#section-3.1.2: migration of that path.

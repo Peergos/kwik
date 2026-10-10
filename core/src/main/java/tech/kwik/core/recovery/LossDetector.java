@@ -29,6 +29,7 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.List;
+import java.util.Map;
 import java.util.SortedMap;
 import java.util.concurrent.ConcurrentSkipListMap;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -99,6 +100,7 @@ public class LossDetector {
             return;
         }
 
+        boolean largestIsNew = ackFrame.getLargestAcknowledged() > largestAcked;
         largestAcked = Long.max(largestAcked, ackFrame.getLargestAcknowledged());
 
         List<PacketStatus> newlyAcked = determineNewlyAcked(ackFrame);
@@ -119,7 +121,7 @@ public class LossDetector {
 
         recoveryManager.setLossDetectionTimer();
 
-        rttEstimater.ackReceived(ackFrame, timeReceived, newlyAcked);
+        rttEstimater.ackReceived(ackFrame, timeReceived, newlyAcked, largestIsNew);
 
         // Cleanup
         newlyAcked.stream().forEach(p -> packetSentLog.remove(p.packet().getPacketNumber()));
@@ -131,7 +133,9 @@ public class LossDetector {
      * @return
      */
     private List<PacketStatus> determineNewlyAcked(AckFrame ackFrame) {
-        long smallestLoggedPacketNumber = packetSentLog.isEmpty() ? Long.MAX_VALUE : packetSentLog.firstKey();
+        // The log is modified concurrently (loss detection timer), so no isEmpty-then-firstKey.
+        Map.Entry<Long, PacketStatus> first = packetSentLog.firstEntry();
+        long smallestLoggedPacketNumber = first == null ? Long.MAX_VALUE : first.getKey();
         return ackFrame.getAckedPacketNumbers(smallestLoggedPacketNumber)
                 .map(pn -> packetSentLog.get(pn))
                 .filter(packetStatus -> packetStatus != null)      // Could be null if the packet was already removed from the log
@@ -163,13 +167,15 @@ public class LossDetector {
     public void declareAllLost() {
         List<PacketStatus> inflightPackets;
         synchronized (this) {
+            // Acks are processed concurrently: only what this call marks lost is accounted for here.
             inflightPackets = packetSentLog.values().stream()
                     .filter(packet -> packet.inFlight())
                     .filter(packetStatus -> packetStatus.setLost())
                     .collect(Collectors.toList());
             congestionController.discard(inflightPackets);
-            packetSentLog.clear();
-            ackElicitingInFlight.set(0);
+            int lostAckEliciting = (int) inflightPackets.stream().filter(p -> p.packet().isAckEliciting()).count();
+            ackElicitingInFlight.getAndAdd(-lostAckEliciting);
+            inflightPackets.forEach(p -> packetSentLog.remove(p.packet().getPacketNumber()));
         }
         inflightPackets.forEach(packetStatus -> packetStatus.lostPacketCallback().accept(packetStatus.packet()));
         postProcessLostCallback.run();

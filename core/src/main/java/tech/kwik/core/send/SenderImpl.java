@@ -289,6 +289,12 @@ public class SenderImpl implements Sender, CongestionControlEventListener, Hands
         if (path != null) {
             path.setState(QuicPath.State.ABANDONED);
             path.getRecoveryManager().abandon();
+            if (paths.isEmpty()) {
+                // Path 0 is the only path again.
+                initialPathSuspect = false;
+                sendRequestQueue[EncryptionLevel.App.ordinal()].setSharedEnabled(true);
+            }
+            wakeUpSenderLoop();
         }
     }
 
@@ -578,6 +584,7 @@ public class SenderImpl implements Sender, CongestionControlEventListener, Hands
         int segmentSize = 0;
         int segments = 0;
         InetSocketAddress destination = null;
+        long batchPathId = 0;
         while (true) {
             AssembledDatagram assembled = assemblePacket();
             if (assembled.isEmpty()) {
@@ -585,7 +592,7 @@ public class SenderImpl implements Sender, CongestionControlEventListener, Hands
             }
             InetSocketAddress address = assembled.getItems().get(0).getClientAddress();
             if (segments > 0 && (!address.equals(destination) || buffer.remaining() < maxPacketSize)) {
-                socketManager.sendSegmented(batchBuffer, buffer.position(), segmentSize, destination);
+                sendSegmented(buffer.position(), segmentSize, destination, batchPathId);
                 buffer.clear();
                 segments = 0;
             }
@@ -596,7 +603,7 @@ public class SenderImpl implements Sender, CongestionControlEventListener, Hands
             }
             if (segments > 0 && size > segmentSize) {
                 // Only the last segment may be shorter, so the longer datagram starts a new batch.
-                socketManager.sendSegmented(batchBuffer, start, segmentSize, destination);
+                sendSegmented(start, segmentSize, destination, batchPathId);
                 System.arraycopy(batchBuffer, start, batchBuffer, 0, size);
                 buffer.position(size);
                 segments = 0;
@@ -604,17 +611,35 @@ public class SenderImpl implements Sender, CongestionControlEventListener, Hands
             if (segments == 0) {
                 segmentSize = size;
                 destination = address;
+                batchPathId = assembled.getItems().get(0).getPacket().getPathId();
             }
             segments++;
             registerSent(assembled.getItems(), clock.instant(), size);
             if (size < segmentSize || segments == maxSegments) {
-                socketManager.sendSegmented(batchBuffer, buffer.position(), segmentSize, destination);
+                sendSegmented(buffer.position(), segmentSize, destination, batchPathId);
                 buffer.clear();
                 segments = 0;
             }
         }
         if (segments > 0) {
-            socketManager.sendSegmented(batchBuffer, buffer.position(), segmentSize, destination);
+            sendSegmented(buffer.position(), segmentSize, destination, batchPathId);
+        }
+    }
+
+    /**
+     * Sends the start of the batch buffer. A failure on a multipath path other than path 0 (e.g. an unreachable
+     * address) only makes that path suspect; its packets are retransmitted elsewhere once declared lost.
+     */
+    private void sendSegmented(int length, int segmentSize, InetSocketAddress destination, long pathId) throws IOException {
+        try {
+            socketManager.sendSegmented(batchBuffer, length, segmentSize, destination);
+        }
+        catch (IOException e) {
+            if (pathId == 0) {
+                throw e;
+            }
+            log.warn("Sending on path " + pathId + " to " + destination + " failed: " + e);
+            probeTimeout(pathId);
         }
     }
 
@@ -677,7 +702,19 @@ public class SenderImpl implements Sender, CongestionControlEventListener, Hands
             return;
         }
         buffer.limit(buffer.position());
-        Instant timeSent = socketManager.send(buffer, assembledDatagram.getItems().get(0).getClientAddress());
+        long pathId = assembledDatagram.getItems().get(0).getPacket().getPathId();
+        Instant timeSent;
+        try {
+            timeSent = socketManager.send(buffer, assembledDatagram.getItems().get(0).getClientAddress());
+        }
+        catch (IOException e) {
+            if (pathId == 0) {
+                throw e;
+            }
+            log.warn("Sending on path " + pathId + " failed: " + e);
+            probeTimeout(pathId);
+            timeSent = clock.instant();
+        }
         registerSent(assembledDatagram.getItems(), timeSent, size);
     }
 
@@ -776,13 +813,20 @@ public class SenderImpl implements Sender, CongestionControlEventListener, Hands
         if (paths.isEmpty()) {
             return assembleInitialPath();
         }
-        // Paths the peer prefers as backup come last, then lower RTT first; acks and probes of a path always go on it.
+        // Suspect paths come last, then those the peer prefers as backup, then lower RTT first. Stream and other shared
+        // frames go only on the first (best) usable path, as iroh does, so a slow path (e.g. the relay) does not hold
+        // up delivery; acks and probes of a path always go on it.
         List<QuicPath> candidates = new ArrayList<>(paths.size() + 1);
         candidates.add(null);
         candidates.addAll(paths.values());
-        candidates.sort(Comparator.comparing((QuicPath p) -> p == null? initialPathSuspect: p.isSuspect())
+        candidates.sort(Comparator.comparing((QuicPath p) -> p == null? initialPathSuspect: !(p.getState() == QuicPath.State.ACTIVE && !p.isSuspect()))
                 .thenComparing((QuicPath p) -> p != null && p.peerPrefersBackup())
                 .thenComparingInt(p -> p == null? rttEstimater.getSmoothedRtt(): p.getRttEstimator().getSmoothedRtt()));
+        QuicPath best = candidates.get(0);
+        sendRequestQueue[EncryptionLevel.App.ordinal()].setSharedEnabled(best == null && !initialPathSuspect);
+        for (QuicPath path : paths.values()) {
+            path.setCarriesData(path == best);
+        }
         for (QuicPath path : candidates) {
             if (path == null) {
                 AssembledDatagram datagram = assembleInitialPath();
