@@ -368,6 +368,13 @@ public class SenderImpl implements Sender, CongestionControlEventListener, Hands
         wakeUpSenderLoop();
     }
 
+    /**
+     * Whether wake-ups are being deferred because more received datagrams are queued; receiver thread only.
+     */
+    public boolean isDeferringWakeUp() {
+        return deferWakeUp;
+    }
+
     @Override
     public void endDeferral() {
         if (deferWakeUp) {

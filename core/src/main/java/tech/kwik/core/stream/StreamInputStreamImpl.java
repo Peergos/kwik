@@ -23,6 +23,7 @@ import tech.kwik.core.frame.MaxStreamDataFrame;
 import tech.kwik.core.frame.QuicFrame;
 import tech.kwik.core.frame.StopSendingFrame;
 import tech.kwik.core.frame.StreamFrame;
+import tech.kwik.core.impl.QuicConnectionImpl;
 import tech.kwik.core.impl.TransportError;
 import tech.kwik.core.log.Logger;
 
@@ -52,6 +53,13 @@ class StreamInputStreamImpl extends StreamInputStream {
     private volatile Thread blockingReaderThread;
     private final ReceiveBuffer receiveBuffer;
     private final Object addMonitor = new Object();
+    // Guarded by addMonitor: whether a reader waits for data.
+    private boolean readerWaiting;
+    private final Runnable wakeReader = () -> {
+        synchronized (addMonitor) {
+            addMonitor.notifyAll();
+        }
+    };
     private long lastCommunicatedMaxData;
     private final long receiverMaxDataIncrement;
     private long largestOffsetReceived;
@@ -107,7 +115,13 @@ class StreamInputStreamImpl extends StreamInputStream {
                 receiveBuffer.add(frame);
                 long largestOffsetIncrease = Long.max(0, frame.getUpToOffset() - largestOffsetReceived);
                 largestOffsetReceived = Long.max(largestOffsetReceived, frame.getUpToOffset());
-                addMonitor.notifyAll();
+                if (readerWaiting) {
+                    // Once per batch of received datagrams rather than per packet.
+                    QuicConnectionImpl connection = quicStream.connection;
+                    if (connection == null || !connection.deferToBatchEnd(wakeReader)) {
+                        addMonitor.notifyAll();
+                    }
+                }
                 return largestOffsetIncrease;
             }
         }
@@ -189,7 +203,13 @@ class StreamInputStreamImpl extends StreamInputStream {
 
                     // Nothing read: block until bytes can be read, read timeout or abort
                     try {
-                        addMonitor.wait(waitPeriod);
+                        readerWaiting = true;
+                        try {
+                            addMonitor.wait(waitPeriod);
+                        }
+                        finally {
+                            readerWaiting = false;
+                        }
                     }
                     catch (InterruptedException e) {
                         // Nothing to do here: read will be abort in next loop iteration with IOException

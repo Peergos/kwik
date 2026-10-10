@@ -131,7 +131,7 @@ public class ServerConnectionThread implements ServerConnectionProxy {
                 ReceivedDatagram datagram = parsed.poll();
                 if (datagram == null) {
                     // The 'more' hint comes from the shared socket, so the next datagram may have gone to another connection.
-                    serverConnection.getSender().endDeferral();
+                    serverConnection.endReceiveBatch();
                     datagram = parsed.take();
                 }
                 PacketMetaData metaData = new PacketMetaData(datagram.timeReceived, datagram.sourceAddress, datagram.datagramNumber, datagram.size);

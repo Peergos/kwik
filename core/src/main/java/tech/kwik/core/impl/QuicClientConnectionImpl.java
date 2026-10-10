@@ -530,7 +530,7 @@ public class QuicClientConnectionImpl extends QuicConnectionImpl implements Quic
             while (! currentThread.isInterrupted()) {
                 if (!receiver.hasMore()) {
                     // The 'more' hint comes from the shared socket, so the next datagram may have gone to another connection.
-                    sender.endDeferral();
+                    endReceiveBatch();
                 }
                 RawPacket rawPacket = receiver.get(15);
                 if (rawPacket != null) {

@@ -78,6 +78,8 @@ public abstract class QuicConnectionImpl implements QuicConnection, PacketProces
     private volatile Long peerMaxPathId;
     private volatile PathManager pathManager;
     private volatile Consumer<QuicPath> pathListener;
+    // Receiver thread only.
+    private final java.util.Set<Runnable> batchEndActions = new java.util.LinkedHashSet<>();
     private volatile Integer addressDiscoveryRole;
     private volatile Integer peerAddressDiscoveryRole;
     private volatile long nextObservedAddressSequenceNumber;
@@ -290,9 +292,42 @@ public abstract class QuicConnectionImpl implements QuicConnection, PacketProces
     public void datagramProcessed() {
         // Processed all packets in the datagram, so not expecting more.
         getSender().packetProcessed(false);
+        if (!batchEndActions.isEmpty() && !getSender().isDeferringWakeUp()) {
+            runBatchEndActions();
+        }
 
         // Finally, execute actions that need to be executed after all responses and acks are sent.
         runPostProcessingActions();
+    }
+
+    /**
+     * Runs the action once the current batch of received datagrams is processed (see Sender.moreDatagramsQueued).
+     * Only for the receiver thread.
+     * @return false when no batch is being processed, in which case the caller acts itself
+     */
+    public boolean deferToBatchEnd(Runnable action) {
+        if (!getSender().isDeferringWakeUp()) {
+            return false;
+        }
+        batchEndActions.add(action);
+        return true;
+    }
+
+    /**
+     * Ends the current batch of received datagrams, e.g. because the receiver found no more after all.
+     */
+    public void endReceiveBatch() {
+        getSender().endDeferral();
+        if (!batchEndActions.isEmpty()) {
+            runBatchEndActions();
+        }
+    }
+
+    private void runBatchEndActions() {
+        for (Runnable action : batchEndActions) {
+            action.run();
+        }
+        batchEndActions.clear();
     }
 
     protected void runPostProcessingActions() {
