@@ -116,6 +116,8 @@ public class RecoveryManager implements FrameReceivedListener<AckFrame>, Handsha
     private final Object scheduleLock = new Object();
     private volatile int ptoCount;
     private volatile Instant timerExpiration;
+    // The time the scheduled task will run at; null when no task is pending (guarded by scheduleLock)
+    private Instant pendingTimeout;
     private volatile HandshakeState handshakeState = HandshakeState.Initial;
     private volatile boolean hasBeenStopped = false;
 
@@ -253,8 +255,12 @@ public class RecoveryManager implements FrameReceivedListener<AckFrame>, Handsha
     }
 
     private void lossDetectionTimeout() {
+        Instant expiration;
+        synchronized (scheduleLock) {
+            pendingTimeout = null;
+            expiration = timerExpiration;
+        }
         // Because cancelling the ScheduledExecutor task quite often fails, double check whether the timer should expire.
-        Instant expiration = timerExpiration;
         if (expiration == null) {
             // Timer was cancelled, but it still fired; ignore
             log.warn("Loss detection timeout: Timer was cancelled.");
@@ -265,9 +271,12 @@ public class RecoveryManager implements FrameReceivedListener<AckFrame>, Handsha
             // executes tasks much earlier than requested (30 ~ 40 ms). In that case, rescheduling is necessary to avoid
             // losing the loss detection timeout event.
             // To be sure the latest timer expiration is used, use timerExpiration i.s.o. the expiration of this call.
-            log.warn(String.format("Loss detection timeout running (at %s) is %s ms too early; rescheduling to %s",
-                    clock.instant(), Duration.between(clock.instant(), expiration).toMillis(), timerExpiration));
-            rescheduleLossDetectionTimeout(timerExpiration);
+            synchronized (scheduleLock) {
+                if (timerExpiration != null && pendingTimeout == null) {
+                    scheduleLossDetectionTimeout(timerExpiration);
+                }
+            }
+            return;
         }
         else {
             log.recovery("%s loss detection timeout handler running", clock.instant());
@@ -445,11 +454,24 @@ public class RecoveryManager implements FrameReceivedListener<AckFrame>, Handsha
     }
 
     void rescheduleLossDetectionTimeout(Instant scheduledTime) {
+        synchronized (scheduleLock) {
+            if (pendingTimeout != null && !scheduledTime.isBefore(pendingTimeout)) {
+                // The pending task fires first and then reschedules to the new expiration (see lossDetectionTimeout);
+                // this avoids a reschedule for every packet sent.
+                timerExpiration = scheduledTime;
+                return;
+            }
+        }
+        scheduleLossDetectionTimeout(scheduledTime);
+    }
+
+    private void scheduleLossDetectionTimeout(Instant scheduledTime) {
         try {
             synchronized (scheduleLock) {
                 // Cancelling the current future and setting the new must be in a sync'd block to ensure the right future is cancelled
                 lossDetectionFuture.cancel(false);
                 timerExpiration = scheduledTime;
+                pendingTimeout = scheduledTime;
                 long delay = Duration.between(clock.instant(), scheduledTime).toMillis();
                 // Delay can be 0 or negative, but that's no problem for ScheduledExecutorService: "Zero and negative delays are also allowed, and are treated as requests for immediate execution."
                 lossDetectionFuture = scheduler.schedule(this::runLossDetectionTimeout, delay, TimeUnit.MILLISECONDS);
@@ -467,6 +489,7 @@ public class RecoveryManager implements FrameReceivedListener<AckFrame>, Handsha
         synchronized (scheduleLock) {
             lossDetectionFuture.cancel(false);
             timerExpiration = null;
+            pendingTimeout = null;
             lossDetectionFuture = new NullScheduledFuture();
         }
     }
@@ -497,8 +520,11 @@ public class RecoveryManager implements FrameReceivedListener<AckFrame>, Handsha
     }
 
     void unschedule() {
-        lossDetectionFuture.cancel(true);
-        timerExpiration = null;
+        synchronized (scheduleLock) {
+            lossDetectionFuture.cancel(true);
+            timerExpiration = null;
+            pendingTimeout = null;
+        }
     }
 
     public boolean waitingForAcknowledgement() {
@@ -533,7 +559,12 @@ public class RecoveryManager implements FrameReceivedListener<AckFrame>, Handsha
     }
 
     private boolean ackElicitingInFlight() {
-        return Stream.of(lossDetectors).anyMatch(detector -> detector.ackElicitingInFlight());
+        for (LossDetector detector : lossDetectors) {
+            if (detector.ackElicitingInFlight()) {
+                return true;
+            }
+        }
+        return false;
     }
 
     public synchronized void setReceiverMaxAckDelay(int receiverMaxAckDelay) {

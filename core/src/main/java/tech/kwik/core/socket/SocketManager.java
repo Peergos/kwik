@@ -40,6 +40,26 @@ public interface SocketManager {
      */
     Instant send(ByteBuffer data, InetSocketAddress clientAddress) throws IOException;
 
+    /**
+     * The maximum number of datagrams {@link #sendSegmented} can send at once; 1 if segmentation is not supported.
+     */
+    default int maxSegments() {
+        return 1;
+    }
+
+    /**
+     * Sends data[0, length) as datagrams of segmentSize bytes (the last may be shorter).
+     */
+    default Instant sendSegmented(byte[] data, int length, int segmentSize, InetSocketAddress clientAddress) throws IOException {
+        Instant timeSent = null;
+        for (int offset = 0; offset < length; offset += segmentSize) {
+            byte[] datagram = java.util.Arrays.copyOfRange(data, offset, Math.min(length, offset + segmentSize));
+            Instant sent = send(ByteBuffer.wrap(datagram), clientAddress);
+            timeSent = timeSent == null ? sent : timeSent;
+        }
+        return timeSent;
+    }
+
     void close();
 
     InetSocketAddress getClientAddress();

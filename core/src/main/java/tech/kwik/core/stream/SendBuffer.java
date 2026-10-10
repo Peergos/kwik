@@ -44,6 +44,8 @@ public class SendBuffer {
     private final ReentrantLock bufferLock;
     private final Condition notFull;
     private volatile Thread blockingWriterThread;
+    // The free space a blocked writer waits for: at least half the buffer, so it isn't woken for every frame sent.
+    private volatile int awaitedSpace;
 
 
     public SendBuffer(Integer sendBufferSize) {
@@ -73,9 +75,10 @@ public class SendBuffer {
         if (len > availableBufferSpace) {
             // Wait for enough buffer space to become available
             bufferLock.lock();
+            awaitedSpace = Integer.min(maxBufferSize, Integer.max(len, maxBufferSize / 2));
             blockingWriterThread = Thread.currentThread();
             try {
-                while (maxBufferSize - bufferedBytes.get() < len) {
+                while (maxBufferSize - bufferedBytes.get() < awaitedSpace) {
                     if (Thread.currentThread().isInterrupted()) {
                         throw new InterruptedException();
                     }
@@ -127,13 +130,15 @@ public class SendBuffer {
             return null;
         }
 
-        bufferedBytes.getAndAdd(-1 * nrOfBytes);
-        bufferLock.lock();
-        try {
-            notFull.signal();
-        }
-        finally {
-            bufferLock.unlock();
+        int buffered = bufferedBytes.addAndGet(-1 * nrOfBytes);
+        if (blockingWriterThread != null && maxBufferSize - buffered >= awaitedSpace) {
+            bufferLock.lock();
+            try {
+                notFull.signal();
+            }
+            finally {
+                bufferLock.unlock();
+            }
         }
         if (nrOfBytes < maxBytesToSend) {
             // This can happen when not enough data is buffer to fill a stream frame, or length field is 1 byte (instead of 2 that was counted for)

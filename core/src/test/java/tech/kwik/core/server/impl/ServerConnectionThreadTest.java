@@ -25,6 +25,7 @@ import tech.kwik.core.log.Logger;
 import tech.kwik.core.packet.PacketFilter;
 import tech.kwik.core.packet.PacketMetaData;
 import tech.kwik.core.packet.ServerRolePacketParser;
+import tech.kwik.core.send.SenderImpl;
 
 import java.net.InetSocketAddress;
 import java.nio.ByteBuffer;
@@ -50,6 +51,7 @@ class ServerConnectionThreadTest {
         when(serverConnection.getPacketProcessorChain()).thenReturn(mock(PacketFilter.class));
         parser = mock(ServerRolePacketParser.class);
         when(serverConnection.createParser()).thenReturn(parser);
+        when(serverConnection.getSender()).thenReturn(mock(SenderImpl.class));
     }
 
     @AfterEach

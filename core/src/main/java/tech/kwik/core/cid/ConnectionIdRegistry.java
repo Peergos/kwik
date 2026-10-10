@@ -20,6 +20,7 @@ package tech.kwik.core.cid;
 
 import tech.kwik.core.log.Logger;
 
+import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
@@ -59,6 +60,15 @@ public abstract class ConnectionIdRegistry {
 
     public Map<Integer, ConnectionIdInfo> getAll() {
         return connectionIds;
+    }
+
+    public boolean isActive(byte[] connectionId) {
+        for (ConnectionIdInfo info : connectionIds.values()) {
+            if (info.getConnectionIdStatus().active() && Arrays.equals(info.getConnectionId(), connectionId)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     public List<byte[]> getActiveConnectionIds() {

@@ -99,6 +99,21 @@ public class LogProxy implements Logger {
     }
 
     @Override
+    public boolean logRaw() {
+        return proxiedLogger.logRaw();
+    }
+
+    @Override
+    public boolean logDebug() {
+        return proxiedLogger.logDebug();
+    }
+
+    @Override
+    public boolean logDecrypted() {
+        return proxiedLogger.logDecrypted();
+    }
+
+    @Override
     public void logCongestionControl(boolean enabled) {
         proxiedLogger.logCongestionControl(enabled);
     }

@@ -42,6 +42,19 @@ public class SharedEndpointSocketManager implements SocketManager {
     }
 
     @Override
+    public int maxSegments() {
+        return endpoint.maxSegments();
+    }
+
+    @Override
+    public Instant sendSegmented(byte[] data, int length, int segmentSize, InetSocketAddress clientAddress) throws IOException {
+        if (endpoint.maxSegments() <= 1) {
+            return SocketManager.super.sendSegmented(data, length, segmentSize, clientAddress);
+        }
+        return endpoint.sendSegmented(data, length, segmentSize, serverAddress);
+    }
+
+    @Override
     public void close() {
         // The endpoint is shared, so it must not be closed here.
     }

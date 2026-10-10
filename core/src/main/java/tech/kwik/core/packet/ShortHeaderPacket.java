@@ -145,7 +145,10 @@ public class ShortHeaderPacket extends QuicPacket {
     @Override
     public int estimateLength(int additionalPayload) {
         int packetNumberSize = computePacketNumberSize(packetNumber);
-        int payloadSize = getFrames().stream().mapToInt(f -> f.getFrameLength()).sum() + additionalPayload;
+        int payloadSize = additionalPayload;
+        for (QuicFrame frame : getFrames()) {
+            payloadSize += frame.getFrameLength();
+        }
         int padding = Integer.max(0,4 - packetNumberSize - payloadSize);
         return 1
                 + destinationConnectionId.length

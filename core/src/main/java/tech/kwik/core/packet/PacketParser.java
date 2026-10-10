@@ -68,7 +68,9 @@ public abstract class PacketParser {
             try {
                 QuicPacket packet = parsePacket(data);
                 log.received(metaData.timeReceived(), metaData.datagramNumber(), packet);
-                log.debug("Parsed packet with size " + data.position() + "; " + data.remaining() + " bytes left.");
+                if (log.logDebug()) {
+                    log.debug("Parsed packet with size " + data.position() + "; " + data.remaining() + " bytes left.");
+                }
 
                 processorChain.processPacket(packet, new PacketMetaData(metaData, data.hasRemaining()));
             }

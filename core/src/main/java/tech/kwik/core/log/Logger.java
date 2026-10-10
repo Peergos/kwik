@@ -34,7 +34,19 @@ public interface Logger {
 
     void logDebug(boolean enabled);
 
+    default boolean logDebug() {
+        return true;
+    }
+
+    default boolean logDecrypted() {
+        return true;
+    }
+
     void logRaw(boolean enabled);
+
+    default boolean logRaw() {
+        return true;
+    }
 
     void logDecrypted(boolean enabled);
 

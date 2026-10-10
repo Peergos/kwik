@@ -176,7 +176,9 @@ abstract public class QuicPacket {
         // "Once header protection is removed, the packet number is decoded by finding the packet number value that is
         //  closest to the next expected packet. The next expected packet is the highest received packet number plus one."
         packetNumber = decodePacketNumber(truncatedPacketNumber, largestPacketNumber, protectedPackageNumberLength * 8);
-        log.decrypted("Unprotected packet number: " + packetNumber);
+        if (log.logDecrypted()) {
+            log.decrypted("Unprotected packet number: " + packetNumber);
+        }
 
         int payloadStartPosition = buffer.position();
         // https://www.rfc-editor.org/rfc/rfc9001.html#section-5.3
@@ -440,7 +442,9 @@ abstract public class QuicPacket {
 
     protected ByteBuffer generatePayloadBytes(int encodedPacketNumberLength) {
         ByteBuffer frameBytes = ByteBuffer.allocate(MAX_SUPPORTED_PACKET_SIZE);
-        frames.stream().forEachOrdered(frame -> frame.serialize(frameBytes));
+        for (QuicFrame frame : frames) {
+            frame.serialize(frameBytes);
+        }
         int serializeFramesLength = frameBytes.position();
         // https://tools.ietf.org/html/draft-ietf-quic-tls-27#section-5.4.2
         // "To ensure that sufficient data is available for sampling, packets are
@@ -585,13 +589,23 @@ abstract public class QuicPacket {
     // https://tools.ietf.org/html/draft-ietf-quic-recovery-33#section-2
     // "Packets that contain ack-eliciting frames elicit an ACK from the receiver (...) and are called ack-eliciting packets."
     public boolean isAckEliciting() {
-        return frames.stream().anyMatch(frame -> frame.isAckEliciting());
+        for (QuicFrame frame : frames) {
+            if (frame.isAckEliciting()) {
+                return true;
+            }
+        }
+        return false;
     }
 
     // https://tools.ietf.org/html/draft-ietf-quic-recovery-20#section-2
     // "ACK-only:  Any packet containing only one or more ACK frame(s)."
     public boolean isAckOnly() {
-        return frames.stream().allMatch(frame -> frame instanceof AckFrame) && !frames.isEmpty();
+        for (QuicFrame frame : frames) {
+            if (!(frame instanceof AckFrame)) {
+                return false;
+            }
+        }
+        return !frames.isEmpty();
     }
 
     // https://www.rfc-editor.org/rfc/rfc9002.html#section-2
@@ -600,7 +614,12 @@ abstract public class QuicPacket {
     //
     // This method covers only the first part, which can be derived from the packet.
     public boolean isInflightPacket() {
-        return frames.stream().anyMatch(frame -> frame.isAckEliciting() || frame instanceof Padding);
+        for (QuicFrame frame : frames) {
+            if (frame.isAckEliciting() || frame instanceof Padding) {
+                return true;
+            }
+        }
+        return false;
     }
 
     public byte[] getDestinationConnectionId() {

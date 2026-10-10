@@ -25,6 +25,7 @@ import tech.kwik.core.common.EncryptionLevel;
 import tech.kwik.core.common.PnSpace;
 import tech.kwik.core.frame.Padding;
 import tech.kwik.core.frame.PathResponseFrame;
+import tech.kwik.core.frame.QuicFrame;
 import tech.kwik.core.impl.VersionHolder;
 
 import java.net.InetSocketAddress;
@@ -122,8 +123,8 @@ public class GlobalPacketAssembler {
                     if (level == Initial) {
                         hasInitial = true;
                     }
-                    if (item.get().getPacket().getFrames().stream().anyMatch(f -> f instanceof PathResponseFrame)) {
-                        hasPathResponse = true;
+                    for (QuicFrame frame : item.get().getPacket().getFrames()) {
+                        hasPathResponse |= frame instanceof PathResponseFrame;
                     }
                 }
                 if (remaining < minPacketSize && (maxDatagramSize - size) < minPacketSize) {

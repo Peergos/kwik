@@ -68,6 +68,21 @@ public abstract class BaseLogger implements Logger {
     }
 
     @Override
+    public boolean logRaw() {
+        return logRawBytes;
+    }
+
+    @Override
+    public boolean logDebug() {
+        return logDebug;
+    }
+
+    @Override
+    public boolean logDecrypted() {
+        return logDecrypted;
+    }
+
+    @Override
     public void logDecrypted(boolean enabled) {
         logDecrypted = enabled;
     }

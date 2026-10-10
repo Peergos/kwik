@@ -42,6 +42,7 @@ import tech.kwik.core.server.ApplicationProtocolConnectionFactory;
 import tech.kwik.core.server.ServerConnectionConfig;
 import tech.kwik.core.server.ServerConnectionFactory;
 import tech.kwik.core.server.ServerConnector;
+import tech.kwik.core.socket.SegmentedDatagramSocket;
 import tech.kwik.core.socket.SharedEndpoint;
 import tech.kwik.core.util.Bytes;
 import tech.kwik.core.util.MemoryWatcher;
@@ -289,6 +290,18 @@ public class ServerConnectorImpl implements ServerConnector {
             DatagramPacket datagram = new DatagramPacket(data.array(), data.limit(), destination.getAddress(), destination.getPort());
             Instant timeSent = Instant.now();
             serverSocket.send(datagram);
+            return timeSent;
+        }
+
+        @Override
+        public int maxSegments() {
+            return serverSocket instanceof SegmentedDatagramSocket ? ((SegmentedDatagramSocket) serverSocket).maxSegments() : 1;
+        }
+
+        @Override
+        public Instant sendSegmented(byte[] data, int length, int segmentSize, InetSocketAddress destination) throws IOException {
+            Instant timeSent = Instant.now();
+            ((SegmentedDatagramSocket) serverSocket).sendSegmented(data, 0, length, segmentSize, destination);
             return timeSent;
         }
 

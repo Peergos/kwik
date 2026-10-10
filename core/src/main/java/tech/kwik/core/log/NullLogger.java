@@ -218,6 +218,21 @@ public class NullLogger implements Logger {
     }
 
     @Override
+    public boolean logRaw() {
+        return false;
+    }
+
+    @Override
+    public boolean logDebug() {
+        return false;
+    }
+
+    @Override
+    public boolean logDecrypted() {
+        return false;
+    }
+
+    @Override
     public QLog getQLog() {
         return new NullQLog();
     }

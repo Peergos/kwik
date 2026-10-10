@@ -46,6 +46,7 @@ import tech.kwik.core.send.AssembledDatagram;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.nio.ByteBuffer;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
@@ -161,6 +162,38 @@ class SenderImplTest extends AbstractSenderTest {
 
         // Then   (given fixed size of StreamFrames, only three packets will fit in the limit of 3 * 1200)
         verify(socketManager, times(3)).send(any(ByteBuffer.class), any(InetSocketAddress.class));
+    }
+
+    @Test
+    void datagramsOfEqualSizeAreSentInOneSegmentedSend() throws Exception {
+        // Given
+        when(socketManager.maxSegments()).thenReturn(64);
+        when(socketManager.sendSegmented(any(byte[].class), anyInt(), anyInt(), any())).thenReturn(Instant.now());
+        packetAssembler = mock(GlobalPacketAssembler.class);
+        when(packetAssembler.assemble(anyInt(), anyInt(), any(InetSocketAddress.class)))
+                .thenReturn(datagram(1, 1000), datagram(2, 1000), datagram(3, 1000), datagram(4, 500), datagram(5, 1000),
+                        new AssembledDatagram(List.of()));
+        when(packetAssembler.nextDelayedSendTime()).thenReturn(Optional.empty());
+        FieldSetter.setField(sender, sender.getClass().getDeclaredField("packetAssembler"), packetAssembler);
+
+        // When
+        sender.sendIfAny();
+
+        // Then
+        ArgumentCaptor<Integer> lengths = ArgumentCaptor.forClass(Integer.class);
+        ArgumentCaptor<Integer> segmentSizes = ArgumentCaptor.forClass(Integer.class);
+        verify(socketManager, times(2)).sendSegmented(any(byte[].class), lengths.capture(), segmentSizes.capture(), any());
+        int segmentSize = segmentSizes.getAllValues().get(0);
+        // The shorter datagram ends the first batch, so the next full size one starts a second.
+        assertThat(lengths.getAllValues().get(0)).isEqualTo(3 * segmentSize + segmentSize - 500);
+        assertThat(lengths.getAllValues().get(1)).isEqualTo(segmentSize);
+        assertThat(sender.getStatistics().datagramsSent()).isEqualTo(5);
+    }
+
+    private AssembledDatagram datagram(int packetNumber, int dataSize) {
+        ShortHeaderPacket packet = new ShortHeaderPacket(Version.getDefault(), new byte[4], new StreamFrame(0, new byte[dataSize], false));
+        packet.setPacketNumber(packetNumber);
+        return new AssembledDatagram(new SendItem(packet, clientAddress));
     }
 
     private void setupMockPacketAssember() throws Exception {

@@ -530,7 +530,7 @@ public class ConnectionIdManager implements ConnectionIdProvider {
      * @return
      */
     public boolean isActiveCid(byte[] cid) {
-        return getActiveConnectionIds().stream().anyMatch(activeCid -> Arrays.equals(activeCid, cid));
+        return cidRegistry.isActive(cid);
     }
 
     public int getCurrentPeerConnectionIdLength() {

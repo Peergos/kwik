@@ -31,12 +31,13 @@ import tech.kwik.core.stream.StreamElement;
 import java.nio.ByteBuffer;
 import java.util.Arrays;
 import java.util.Objects;
-import java.util.stream.Stream;
 
 import static tech.kwik.core.QuicConstants.TransportErrorCode.FRAME_ENCODING_ERROR;
 
 
 public class StreamFrame extends QuicFrame implements StreamElement {
+
+    private static final StreamType[] STREAM_TYPES = StreamType.values();
 
     private StreamType streamType;
     private int streamId;
@@ -66,7 +67,7 @@ public class StreamFrame extends QuicFrame implements StreamElement {
     }
 
     public StreamFrame(Version quicVersion, int streamId, long streamOffset, byte[] applicationData, int dataOffset, int dataLength, boolean fin) {
-        streamType = Stream.of(StreamType.values()).filter(t -> t.value == (streamId & 0x03)).findFirst().get();
+        streamType = STREAM_TYPES[streamId & 0x03];
         this.streamId = streamId;
         this.offset = streamOffset;
         this.streamData = new byte[dataLength];
@@ -116,7 +117,7 @@ public class StreamFrame extends QuicFrame implements StreamElement {
         isFinal = ((frameType & 0x01) == 0x01);
 
         streamId = parseVariableLengthIntegerLimitedToInt(buffer);  // Kwik does not support stream id's larger than max int.
-        streamType = Stream.of(StreamType.values()).filter(t -> t.value == (streamId & 0x03)).findFirst().get();
+        streamType = STREAM_TYPES[streamId & 0x03];
 
         if (withOffset) {
             offset = VariableLengthInteger.parseLong(buffer);

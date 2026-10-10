@@ -137,6 +137,13 @@ public interface Sender {
     void datagramProcessed(boolean expectingMore);
 
     /**
+     * Tells the sender whether more received datagrams are waiting to be processed after the current one, so it can
+     * defer sending (e.g. acks) until a batch of datagrams is processed.
+     */
+    default void moreDatagramsQueued(boolean more) {
+    }
+
+    /**
      * Notifies the sender that queued frames and packets should be sent as soon as possible.
      */
     void flush();

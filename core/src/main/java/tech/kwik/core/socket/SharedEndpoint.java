@@ -39,6 +39,14 @@ public interface SharedEndpoint {
 
     Instant send(ByteBuffer data, InetSocketAddress destination) throws IOException;
 
+    default int maxSegments() {
+        return 1;
+    }
+
+    default Instant sendSegmented(byte[] data, int length, int segmentSize, InetSocketAddress destination) throws IOException {
+        throw new UnsupportedOperationException();
+    }
+
     /**
      * Routes datagrams whose destination connection ID equals the given one to the given receiver.
      */

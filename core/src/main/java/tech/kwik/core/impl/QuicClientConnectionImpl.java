@@ -531,11 +531,17 @@ public class QuicClientConnectionImpl extends QuicConnectionImpl implements Quic
                         log.error("Dropping UDP packet with size " + rawPacket.getLength() + ", which is larger than the maximum allowed UDP payload size of " + connectionProperties.getMaxUdpPayloadSize());
                         continue;
                     }
-                    Duration processDelay = Duration.between(rawPacket.getTimeReceived(), Instant.now());
-                    log.raw("Start processing packet " + ++receivedPacketCounter + " (" + rawPacket.getLength() + " bytes)", rawPacket.getData(), 0, rawPacket.getLength());
-                    log.debug("Processing delay for packet #" + receivedPacketCounter + ": " + processDelay.toMillis() + " ms");
+                    ++receivedPacketCounter;
+                    if (log.logRaw()) {
+                        log.raw("Start processing packet " + receivedPacketCounter + " (" + rawPacket.getLength() + " bytes)", rawPacket.getData(), 0, rawPacket.getLength());
+                    }
+                    if (log.logDebug()) {
+                        Duration processDelay = Duration.between(rawPacket.getTimeReceived(), Instant.now());
+                        log.debug("Processing delay for packet #" + receivedPacketCounter + ": " + processDelay.toMillis() + " ms");
+                    }
 
                     PacketMetaData metaData = new PacketMetaData(rawPacket.getTimeReceived(), rawPacket.getPeerAddress(), receivedPacketCounter, rawPacket.getData().limit());
+                    sender.moreDatagramsQueued(receiver.hasMore());
                     datagramProcessingChain.processDatagram(rawPacket.getData(), metaData);
 
                     sender.datagramProcessed(receiver.hasMore());

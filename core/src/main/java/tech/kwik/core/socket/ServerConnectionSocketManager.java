@@ -54,6 +54,21 @@ public class ServerConnectionSocketManager implements SocketManager {
     }
 
     @Override
+    public int maxSegments() {
+        return serverSocket instanceof SegmentedDatagramSocket ? ((SegmentedDatagramSocket) serverSocket).maxSegments() : 1;
+    }
+
+    @Override
+    public Instant sendSegmented(byte[] data, int length, int segmentSize, InetSocketAddress clientAddress) throws IOException {
+        if (!(serverSocket instanceof SegmentedDatagramSocket)) {
+            return SocketManager.super.sendSegmented(data, length, segmentSize, clientAddress);
+        }
+        Instant timeSent = clock.instant();
+        ((SegmentedDatagramSocket) serverSocket).sendSegmented(data, 0, length, segmentSize, clientAddress);
+        return timeSent;
+    }
+
+    @Override
     public void close() {
         // Note that the serverSocket must not be closed here, as it is used for all server connections ;-)
     }

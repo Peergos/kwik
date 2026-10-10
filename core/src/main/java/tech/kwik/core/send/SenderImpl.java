@@ -116,6 +116,13 @@ public class SenderImpl implements Sender, CongestionControlEventListener {
     private volatile Runnable shutdownHook;
     private volatile Instant lastestAckElicitingTime;
     private final byte[] paddingPattern;
+    private static final int MAX_BATCH_BYTES = 65000;
+    // While received datagrams are queued, the sender is woken once per this many datagrams instead of for each, so
+    // acks cover more packets. Only accessed by the receiver thread.
+    private static final int MAX_DEFERRED_WAKE_UPS = 16;
+    private boolean moreDatagramsQueued;
+    private int deferredWakeUps;
+    private byte[] batchBuffer;
 
 
     public SenderImpl(VersionHolder version, int maxPacketSize, SocketManager socketManager, QuicConnectionImpl connection,
@@ -249,7 +256,17 @@ public class SenderImpl implements Sender, CongestionControlEventListener {
 
     @Override
     public void packetProcessed(boolean expectingMore) {
-        wakeUpSenderLoop();  // If you change this, review this.sendAck()!
+        // If you change this, review this.sendAck()!
+        if (!expectingMore && moreDatagramsQueued && ++deferredWakeUps < MAX_DEFERRED_WAKE_UPS) {
+            return;
+        }
+        deferredWakeUps = 0;
+        wakeUpSenderLoop();
+    }
+
+    @Override
+    public void moreDatagramsQueued(boolean more) {
+        moreDatagramsQueued = more;
     }
 
     @Override
@@ -352,6 +369,10 @@ public class SenderImpl implements Sender, CongestionControlEventListener {
     }
 
     void sendIfAny() throws IOException {
+        if (socketManager.maxSegments() > 1) {
+            sendBatched();
+            return;
+        }
         AssembledDatagram assembled;
         do {
             assembled = assemblePacket();
@@ -360,6 +381,59 @@ public class SenderImpl implements Sender, CongestionControlEventListener {
             }
         }
         while (!assembled.isEmpty());
+    }
+
+    /**
+     * Sends as many datagrams as possible per socket call: consecutive datagrams of the same size to the same address
+     * go out as one segmented send (the last may be shorter).
+     */
+    private void sendBatched() throws IOException {
+        int maxSegments = Integer.min(socketManager.maxSegments(), MAX_BATCH_BYTES / maxPacketSize);
+        if (batchBuffer == null || batchBuffer.length < maxSegments * maxPacketSize) {
+            batchBuffer = new byte[maxSegments * maxPacketSize];
+        }
+        ByteBuffer buffer = ByteBuffer.wrap(batchBuffer);
+        int segmentSize = 0;
+        int segments = 0;
+        InetSocketAddress destination = null;
+        while (true) {
+            AssembledDatagram assembled = assemblePacket();
+            if (assembled.isEmpty()) {
+                break;
+            }
+            InetSocketAddress address = assembled.getItems().get(0).getClientAddress();
+            if (segments > 0 && (!address.equals(destination) || buffer.remaining() < maxPacketSize)) {
+                socketManager.sendSegmented(batchBuffer, buffer.position(), segmentSize, destination);
+                buffer.clear();
+                segments = 0;
+            }
+            int start = buffer.position();
+            int size = encode(assembled, buffer);
+            if (size == 0) {
+                continue;
+            }
+            if (segments > 0 && size > segmentSize) {
+                // Only the last segment may be shorter, so the longer datagram starts a new batch.
+                socketManager.sendSegmented(batchBuffer, start, segmentSize, destination);
+                System.arraycopy(batchBuffer, start, batchBuffer, 0, size);
+                buffer.position(size);
+                segments = 0;
+            }
+            if (segments == 0) {
+                segmentSize = size;
+                destination = address;
+            }
+            segments++;
+            registerSent(assembled.getItems(), clock.instant(), size);
+            if (size < segmentSize || segments == maxSegments) {
+                socketManager.sendSegmented(batchBuffer, buffer.position(), segmentSize, destination);
+                buffer.clear();
+                segments = 0;
+            }
+        }
+        if (segments > 0) {
+            socketManager.sendSegmented(batchBuffer, buffer.position(), segmentSize, destination);
+        }
     }
 
     private void wakeUpSenderLoop() {
@@ -405,9 +479,22 @@ public class SenderImpl implements Sender, CongestionControlEventListener {
     }
 
     void send(AssembledDatagram assembledDatagram) throws IOException {
+        ByteBuffer buffer = ByteBuffer.wrap(new byte[maxPacketSize]);
+        int size = encode(assembledDatagram, buffer);
+        if (size == 0) {
+            return;
+        }
+        buffer.limit(buffer.position());
+        Instant timeSent = socketManager.send(buffer, assembledDatagram.getItems().get(0).getClientAddress());
+        registerSent(assembledDatagram.getItems(), timeSent, size);
+    }
+
+    /**
+     * Writes the datagram's packets (and external padding) to the buffer, returning the number of bytes written.
+     */
+    private int encode(AssembledDatagram assembledDatagram, ByteBuffer buffer) {
         List<SendItem> itemsToSend = assembledDatagram.getItems();
-        byte[] datagramData = new byte[maxPacketSize];
-        ByteBuffer buffer = ByteBuffer.wrap(datagramData);
+        int start = buffer.position();
         try {
             Iterator<SendItem> packetIterator = itemsToSend.iterator();
             while (packetIterator.hasNext()) {
@@ -416,7 +503,9 @@ public class SenderImpl implements Sender, CongestionControlEventListener {
                     Aead aead = connectionSecrets.getOwnAead(packet.getEncryptionLevel());
                     byte[] packetData = packet.generatePacketBytes(aead);
                     buffer.put(packetData);
-                    log.raw("packet sent, pn: " + packet.getPacketNumber(), packetData);
+                    if (log.logRaw()) {
+                        log.raw("packet sent, pn: " + packet.getPacketNumber(), packetData);
+                    }
                 }
                 catch (MissingKeysException e) {
                     if (e.getMissingKeysCause() == MissingKeysException.Cause.DiscardedKeys) {
@@ -434,37 +523,38 @@ public class SenderImpl implements Sender, CongestionControlEventListener {
             // rethrow
             throw bufferOverflow;
         }
-        if (buffer.position() == 0) {
-            // Nothing to send
-            return;
+        if (buffer.position() == start) {
+            return 0;
         }
-        addExternalPadding(buffer, assembledDatagram.getMinDatagramSize());
+        addExternalPadding(buffer, assembledDatagram.getMinDatagramSize() - (buffer.position() - start));
+        return buffer.position() - start;
+    }
 
-        buffer.limit(buffer.position());
-
-        Instant timeSent = socketManager.send(buffer, itemsToSend.stream().findAny().get().getClientAddress());
+    private void registerSent(List<SendItem> itemsToSend, Instant timeSent, int size) {
         datagramsSent++;
         packetsSent += itemsToSend.size();
-        bytesSent += buffer.position();
+        bytesSent += size;
 
-        itemsToSend.stream()
-                .forEach(item -> {
-                    recoveryManager.packetSent(item.getPacket(), timeSent, item.getPacketLostCallback());
-                    idleTimer.packetSent(item.getPacket(), timeSent);
-                });
-
-        List<QuicPacket> packetsSent = itemsToSend.stream().map(item -> item.getPacket()).collect(Collectors.toList());
-        if (packetsSent.stream().anyMatch(p -> p.isAckEliciting())) {
+        boolean ackEliciting = false;
+        long data = 0;
+        for (SendItem item : itemsToSend) {
+            QuicPacket packet = item.getPacket();
+            recoveryManager.packetSent(packet, timeSent, item.getPacketLostCallback());
+            idleTimer.packetSent(packet, timeSent);
+            ackEliciting |= packet.isAckEliciting();
+            data += countDataBytes(packet);
+        }
+        if (ackEliciting) {
             lastestAckElicitingTime = timeSent;
         }
+        dataSent += data;
+        List<QuicPacket> packetsSent = itemsToSend.stream().map(item -> item.getPacket()).collect(Collectors.toList());
         log.sent(timeSent, packetsSent);
-        dataSent += countDataBytes(packetsSent);
         qlog.emitPacketSentEvent(packetsSent, timeSent);
     }
 
-    private void addExternalPadding(ByteBuffer buffer, int minDatagramSize) {
-        if (minDatagramSize > 0 && buffer.position() < minDatagramSize) {
-            int paddingLength = minDatagramSize - buffer.position();
+    private void addExternalPadding(ByteBuffer buffer, int paddingLength) {
+        if (paddingLength > 0) {
             byte[] padding = new byte[paddingLength];
             for (int i = 0; i < paddingLength; i++) {
                 padding[i] = paddingPattern[i % paddingPattern.length];
@@ -514,11 +604,17 @@ public class SenderImpl implements Sender, CongestionControlEventListener {
         }
     }
 
-    private static long countDataBytes(List<QuicPacket> packets) {
-        return packets.stream()
-                .filter(p -> p instanceof ShortHeaderPacket)
-                .mapToInt(p -> p.getFrames().stream().filter(f -> f instanceof StreamFrame).mapToInt(f -> ((StreamFrame) f).getLength()).sum())
-                .sum();
+    private static long countDataBytes(QuicPacket packet) {
+        if (!(packet instanceof ShortHeaderPacket)) {
+            return 0;
+        }
+        long count = 0;
+        for (QuicFrame frame : packet.getFrames()) {
+            if (frame instanceof StreamFrame) {
+                count += ((StreamFrame) frame).getLength();
+            }
+        }
+        return count;
     }
 
     public SendStatistics getStatistics() {

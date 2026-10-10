@@ -105,6 +105,7 @@ public class ServerConnectionThread implements ServerConnectionProxy {
             while (! connectionReceiverThread.isInterrupted()) {
                 ReceivedDatagram datagram = queue.take();
                 PacketMetaData metaData = new PacketMetaData(datagram.timeReceived, datagram.sourceAddress, datagram.datagramNumber, datagram.size);
+                serverConnection.getSender().moreDatagramsQueued(!queue.isEmpty());
                 datagramProcessingChain.processDatagram(datagram.data, metaData);
             }
         }

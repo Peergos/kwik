@@ -65,7 +65,9 @@ public class AbstractCongestionController implements CongestionController {
             bytesInFlight -= bytesInFlightAcked;
             eventListener.bytesInFlightDecreased(bytesInFlight);
             checkBytesInFlight();
-            log.debug("Bytes in flight decreased to " + bytesInFlight + " (" + acknowlegdedPackets.size() + " packets acked)");
+            if (log.logDebug()) {
+                log.debug("Bytes in flight decreased to " + bytesInFlight + " (" + acknowlegdedPackets.size() + " packets acked)");
+            }
         }
     }
 
