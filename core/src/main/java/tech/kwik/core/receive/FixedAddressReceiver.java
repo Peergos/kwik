@@ -30,7 +30,12 @@ public class FixedAddressReceiver extends AbstractReceiver {
     private final Thread receiverThread;
 
     public FixedAddressReceiver(DatagramSocket socket, Logger log, Consumer<Throwable> abortCallback) {
+        this(socket, log, abortCallback, null);
+    }
+
+    public FixedAddressReceiver(DatagramSocket socket, Logger log, Consumer<Throwable> abortCallback, Consumer<RawPacket> sink) {
         super(log, p -> true, abortCallback);
+        setSink(sink);
 
         receiverThread = new Thread(() -> runSocketReceiveLoop(socket), "receiver");
         receiverThread.setDaemon(true);

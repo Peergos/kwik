@@ -541,7 +541,7 @@ public class QuicClientConnectionImpl extends QuicConnectionImpl implements Quic
                     }
 
                     PacketMetaData metaData = new PacketMetaData(rawPacket.getTimeReceived(), rawPacket.getPeerAddress(), receivedPacketCounter, rawPacket.getData().limit());
-                    sender.moreDatagramsQueued(receiver.hasMore());
+                    sender.moreDatagramsQueued(rawPacket.isMore() || receiver.hasMore());
                     datagramProcessingChain.processDatagram(rawPacket.getData(), metaData);
 
                     sender.datagramProcessed(receiver.hasMore());

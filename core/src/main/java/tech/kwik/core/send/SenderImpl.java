@@ -117,11 +117,12 @@ public class SenderImpl implements Sender, CongestionControlEventListener {
     private volatile Instant lastestAckElicitingTime;
     private final byte[] paddingPattern;
     private static final int MAX_BATCH_BYTES = 65000;
-    // While received datagrams are queued, the sender is woken once per this many datagrams instead of for each, so
-    // acks cover more packets. Only accessed by the receiver thread.
+    // While received datagrams are queued, the sender is woken once per this many datagrams instead of for each, and
+    // immediate acks are held until then, so acks cover more packets. Only accessed by the receiver thread.
     private static final int MAX_DEFERRED_WAKE_UPS = 16;
     private boolean moreDatagramsQueued;
     private int deferredWakeUps;
+    private boolean ackHeld;
     private byte[] batchBuffer;
 
 
@@ -217,6 +218,10 @@ public class SenderImpl implements Sender, CongestionControlEventListener {
 
     @Override
     public void sendAck(PnSpace pnSpace, int maxDelay) {
+        if (maxDelay == 0 && pnSpace == PnSpace.App && moreDatagramsQueued) {
+            ackHeld = true;
+            maxDelay = 20;
+        }
         sendRequestQueue[pnSpace.relatedEncryptionLevel().ordinal()].addAckRequest(maxDelay);
         if (maxDelay > 0) {
             // Now, the sender loop must use a different wait-period, to ensure it wakes up when the delayed ack
@@ -261,6 +266,10 @@ public class SenderImpl implements Sender, CongestionControlEventListener {
             return;
         }
         deferredWakeUps = 0;
+        if (ackHeld) {
+            ackHeld = false;
+            sendRequestQueue[EncryptionLevel.App.ordinal()].addAckRequest(0);
+        }
         wakeUpSenderLoop();
     }
 

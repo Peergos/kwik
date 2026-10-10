@@ -67,7 +67,12 @@ public class ServerConnectionThread implements ServerConnectionProxy {
 
     @Override
     public void parsePackets(int datagramNumber, Instant timeReceived, ByteBuffer data, InetSocketAddress sourceAddress) {
-        queue.add(new ReceivedDatagram(datagramNumber, timeReceived, data, sourceAddress));
+        parsePackets(datagramNumber, timeReceived, data, sourceAddress, false);
+    }
+
+    @Override
+    public void parsePackets(int datagramNumber, Instant timeReceived, ByteBuffer data, InetSocketAddress sourceAddress, boolean more) {
+        queue.add(new ReceivedDatagram(datagramNumber, timeReceived, data, sourceAddress, more));
     }
 
     @Override
@@ -105,7 +110,7 @@ public class ServerConnectionThread implements ServerConnectionProxy {
             while (! connectionReceiverThread.isInterrupted()) {
                 ReceivedDatagram datagram = queue.take();
                 PacketMetaData metaData = new PacketMetaData(datagram.timeReceived, datagram.sourceAddress, datagram.datagramNumber, datagram.size);
-                serverConnection.getSender().moreDatagramsQueued(!queue.isEmpty());
+                serverConnection.getSender().moreDatagramsQueued(datagram.more || !queue.isEmpty());
                 datagramProcessingChain.processDatagram(datagram.data, metaData);
             }
         }
@@ -152,8 +157,10 @@ public class ServerConnectionThread implements ServerConnectionProxy {
         final ByteBuffer data;
         final InetSocketAddress sourceAddress;
         final int size;
+        final boolean more;
 
-        public ReceivedDatagram(int datagramNumber, Instant timeReceived, ByteBuffer data, InetSocketAddress sourceAddress) {
+        public ReceivedDatagram(int datagramNumber, Instant timeReceived, ByteBuffer data, InetSocketAddress sourceAddress, boolean more) {
+            this.more = more;
             this.datagramNumber = datagramNumber;
             this.timeReceived = timeReceived;
             this.data = data;

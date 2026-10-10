@@ -29,6 +29,13 @@ public interface ServerConnectionProxy {
 
     void parsePackets(int datagramNumber, Instant timeReceived, ByteBuffer data, InetSocketAddress sourceAddress);
 
+    /**
+     * @param more whether more datagrams were already received after this one
+     */
+    default void parsePackets(int datagramNumber, Instant timeReceived, ByteBuffer data, InetSocketAddress sourceAddress, boolean more) {
+        parsePackets(datagramNumber, timeReceived, data, sourceAddress);
+    }
+
     boolean isClosed();
 
     void closeConnection();

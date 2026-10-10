@@ -30,4 +30,12 @@ public interface SegmentedDatagramSocket {
     int maxSegments();
 
     void sendSegmented(byte[] data, int offset, int length, int segmentSize, InetSocketAddress destination) throws IOException;
+
+    /**
+     * Whether more received datagrams are ready after the one the last receive returned, so a receiver can hold its
+     * acks until it has processed them.
+     */
+    default boolean moreReceived() {
+        return false;
+    }
 }

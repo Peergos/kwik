@@ -98,7 +98,6 @@ public class ServerConnectorImpl implements ServerConnector {
     private final ServerConnectionRegistryImpl connectionRegistry;
     private final int connectionIdLength;
     private volatile boolean acceptingNewConnections;
-    private final Thread serverReceiveLoop;
     private volatile boolean closing;
 
     /**
@@ -155,7 +154,7 @@ public class ServerConnectorImpl implements ServerConnector {
                 .map(Version::of)
                 .map(Version::getId)
                 .collect(Collectors.toList());
-        receiver = new FixedAddressReceiver(serverSocket, log, exception -> close());
+        receiver = new FixedAddressReceiver(serverSocket, log, exception -> close(), this::processReceived);
 
         int maxSharedExecutorThreads = 10;
         sharedExecutor = new ThreadPoolExecutor(1, maxSharedExecutorThreads, 60L, TimeUnit.SECONDS,
@@ -164,8 +163,6 @@ public class ServerConnectorImpl implements ServerConnector {
         sharedScheduledExecutor = new ScheduledThreadPoolExecutor(1);
         sharedScheduledExecutor.setRejectedExecutionHandler(new ThreadPoolExecutor.DiscardPolicy());
         context = new ServerConnectorContext();
-
-        serverReceiveLoop = new Thread(this::receiveLoop, "server receive loop");
 
         new MemoryWatcher(85, log);
 
@@ -203,8 +200,6 @@ public class ServerConnectorImpl implements ServerConnector {
     public void start() {
         acceptingNewConnections = true;
         receiver.start();
-
-        serverReceiveLoop.start();
         log.info("Kwik server connector started on port " + serverSocket.getLocalPort() + "; supported application protocols: "
                 + applicationProtocolRegistry.getRegisteredApplicationProtocols());
     }
@@ -213,21 +208,12 @@ public class ServerConnectorImpl implements ServerConnector {
         acceptingNewConnections = false;
     }
 
-    protected void receiveLoop() {
-        while (true) {
-            try {
-                RawPacket rawPacket = receiver.get((int) Duration.ofDays(10 * 365).toSeconds());
-                process(rawPacket);
-            }
-            catch (InterruptedException e) {
-                if (! closing) {
-                    log.error("receiver loop interrupted and terminated");
-                }
-                break;
-            }
-            catch (Exception runtimeError) {
-                log.error("Uncaught exception in server receive loop", runtimeError);
-            }
+    private void processReceived(RawPacket rawPacket) {
+        try {
+            process(rawPacket);
+        }
+        catch (Exception runtimeError) {
+            log.error("Uncaught exception in server receive loop", runtimeError);
         }
     }
 
@@ -244,7 +230,7 @@ public class ServerConnectorImpl implements ServerConnector {
             processLongHeaderPacket(rawPacket.getPeerAddress(), data);
         }
         else if (isValidShortHeaderPacket(data)) {
-            processShortHeaderPacket(rawPacket.getPeerAddress(), data);
+            processShortHeaderPacket(rawPacket, data);
         }
         else {
             // There is another reason why a long header packet could be invalid (inconsistent connection ID lengths),
@@ -448,7 +434,7 @@ public class ServerConnectorImpl implements ServerConnector {
         if (acceptingNewConnections) {
             ServerConnectionProxy connection;
             // Check-and-create often requires a lock to avoid race conditions, but in this case this is not necessary
-            // because this method is only called from one thread (see receiveLoop)
+            // because this method is only called from one thread (the receiver thread)
             connection = connectionRegistry.isExistingConnection(clientAddress, dcid)
                     .orElseGet(() -> createNewConnection(version, clientAddress, scid, dcid));
             connection.parsePackets(0, Instant.now(), data, clientAddress);
@@ -475,13 +461,14 @@ public class ServerConnectorImpl implements ServerConnector {
         }
     }
 
-    private void processShortHeaderPacket(InetSocketAddress clientAddress, ByteBuffer data) {
+    private void processShortHeaderPacket(RawPacket rawPacket, ByteBuffer data) {
+        InetSocketAddress clientAddress = rawPacket.getPeerAddress();
         byte[] dcid = new byte[connectionIdLength];
         data.position(1);
         data.get(dcid);
         data.rewind();
         Optional<ServerConnectionProxy> connection = connectionRegistry.isExistingConnection(clientAddress, dcid);
-        connection.ifPresentOrElse(c -> c.parsePackets(0, Instant.now(), data, clientAddress),
+        connection.ifPresentOrElse(c -> c.parsePackets(0, rawPacket.getTimeReceived(), data, clientAddress, rawPacket.isMore()),
                 () -> log.warn("Discarding short header packet addressing non existent connection " + Bytes.bytesToHex(dcid)));
     }
 
@@ -558,7 +545,6 @@ public class ServerConnectorImpl implements ServerConnector {
         closeAllConnections();
         connectionRegistry.waitForAllConnectionsToClose(timeout);
 
-        serverReceiveLoop.interrupt();
         receiver.shutdown();
         serverSocket.close();
         tlsEngineFactory.dispose();

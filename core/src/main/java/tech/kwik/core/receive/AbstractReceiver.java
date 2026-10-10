@@ -27,6 +27,8 @@ import java.net.DatagramSocket;
 import java.net.InetSocketAddress;
 import java.net.PortUnreachableException;
 import java.net.SocketTimeoutException;
+import tech.kwik.core.socket.SegmentedDatagramSocket;
+
 import java.time.Instant;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.LinkedBlockingQueue;
@@ -46,6 +48,7 @@ public abstract class AbstractReceiver implements Receiver {
     protected final Consumer<Throwable> abortCallback;
     protected final BlockingQueue<RawPacket> receivedPacketsQueue;
     protected volatile boolean isClosing;
+    private Consumer<RawPacket> sink;
 
     public AbstractReceiver(Logger log, Predicate<DatagramPacket> packetFilter, Consumer<Throwable> abortCallback) {
         this.log = log;
@@ -53,6 +56,13 @@ public abstract class AbstractReceiver implements Receiver {
         this.abortCallback = abortCallback;
 
         receivedPacketsQueue = new LinkedBlockingQueue<>();
+    }
+
+    /**
+     * Hands received packets to the given consumer on the receiving thread, instead of queueing them for get().
+     */
+    protected void setSink(Consumer<RawPacket> sink) {
+        this.sink = sink;
     }
 
     @Override
@@ -88,8 +98,14 @@ public abstract class AbstractReceiver implements Receiver {
 
                     if (packetFilter.test(receivedPacket)) {
                         Instant timeReceived = Instant.now();
-                        RawPacket rawPacket = new RawPacket(receivedPacket, timeReceived, (InetSocketAddress) socket.getLocalSocketAddress());
-                        receivedPacketsQueue.add(rawPacket);
+                        boolean more = socket instanceof SegmentedDatagramSocket && ((SegmentedDatagramSocket) socket).moreReceived();
+                        RawPacket rawPacket = new RawPacket(receivedPacket, timeReceived, (InetSocketAddress) socket.getLocalSocketAddress(), more);
+                        if (sink != null) {
+                            sink.accept(rawPacket);
+                        }
+                        else {
+                            receivedPacketsQueue.add(rawPacket);
+                        }
                     }
                 }
                 catch (SocketTimeoutException timeout) {

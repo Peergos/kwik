@@ -34,14 +34,27 @@ public class RawPacket {
     private final ByteBuffer data;
     private final InetSocketAddress peerAddress;
     private final InetSocketAddress localAddress;
+    private final boolean more;
 
     public RawPacket(DatagramPacket receivedPacket, Instant timeReceived, InetSocketAddress localAddress) {
+        this(receivedPacket, timeReceived, localAddress, false);
+    }
+
+    public RawPacket(DatagramPacket receivedPacket, Instant timeReceived, InetSocketAddress localAddress, boolean more) {
         this.receivedPacket = receivedPacket;
         this.timeReceived = timeReceived;
 
         data = ByteBuffer.wrap(receivedPacket.getData(), 0, receivedPacket.getLength());
         this.peerAddress = (InetSocketAddress) receivedPacket.getSocketAddress();
         this.localAddress = localAddress;
+        this.more = more;
+    }
+
+    /**
+     * Whether more datagrams were already received when this one was handed over.
+     */
+    public boolean isMore() {
+        return more;
     }
 
     public Instant getTimeReceived() {
