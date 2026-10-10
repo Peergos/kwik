@@ -13,3 +13,10 @@ project(":interop").name = "kwik-interop"
 project(":cli").name = "kwik-cli"
 project(":samples").name = "kwik-samples"
 project(":h09").name = "kwik-h09"
+
+// Build against the local agent15 fork (raw public keys, Ed25519, server-side client authentication).
+includeBuild('../agent15') {
+    dependencySubstitution {
+        substitute module('tech.kwik:agent15') using project(':core')
+    }
+}

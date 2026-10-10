@@ -135,6 +135,8 @@ public class QuicClientConnectionImpl extends QuicConnectionImpl implements Quic
     private volatile TransportParameters transportParams;
     private final X509Certificate clientCertificate;
     private final PrivateKey clientCertificateKey;
+    private Predicate<PublicKey> serverRawPublicKeyVerifier;
+    private KeyPair clientRawPublicKey;
     private X509ExtendedKeyManager keyManager;
     private final ConnectionIdManager connectionIdManager;
     private final Version originalVersion;
@@ -537,7 +539,8 @@ public class QuicClientConnectionImpl extends QuicConnectionImpl implements Quic
     }
 
     private void startHandshake(String applicationProtocol, boolean withEarlyData) {
-        tlsEngine.setServerName(host);
+        // A server that is identified by its raw public key needs no server name, and sending one would only leak it.
+        tlsEngine.setServerName(serverRawPublicKeyVerifier != null? null: host);
         tlsEngine.addSupportedCiphers(cipherSuites);
 
         handleClientAuthentication();
@@ -564,9 +567,10 @@ public class QuicClientConnectionImpl extends QuicConnectionImpl implements Quic
         }
 
         try {
-            List<TlsConstants.SignatureScheme> supportedSignatureAlgorithms = List.of(
-                    rsa_pss_rsae_sha256, rsa_pss_rsae_sha384, rsa_pss_rsae_sha512,
-                    ecdsa_secp256r1_sha256, ecdsa_secp384r1_sha384, ecdsa_secp521r1_sha512);
+            List<TlsConstants.SignatureScheme> supportedSignatureAlgorithms = serverRawPublicKeyVerifier != null?
+                    List.of(ed25519):
+                    List.of(rsa_pss_rsae_sha256, rsa_pss_rsae_sha384, rsa_pss_rsae_sha512,
+                            ecdsa_secp256r1_sha256, ecdsa_secp384r1_sha384, ecdsa_secp521r1_sha512);
             tlsEngine.startHandshake(keyShareGroups, supportedGroups, supportedSignatureAlgorithms);
         }
         catch (IOException e) {
@@ -575,6 +579,12 @@ public class QuicClientConnectionImpl extends QuicConnectionImpl implements Quic
     }
 
     private void handleClientAuthentication() {
+        if (serverRawPublicKeyVerifier != null) {
+            tlsEngine.setServerRawPublicKeyVerifier(serverRawPublicKeyVerifier);
+        }
+        if (clientRawPublicKey != null) {
+            tlsEngine.setClientRawPublicKey(clientRawPublicKey.getPublic(), clientRawPublicKey.getPrivate());
+        }
         if (clientCertificate != null && clientCertificateKey != null) {
             tlsEngine.setClientCertificateCallback(authorities -> {
                 if (! authorities.contains(clientCertificate.getIssuerX500Principal())) {
@@ -1352,6 +1362,16 @@ public class QuicClientConnectionImpl extends QuicConnectionImpl implements Quic
         tlsEngine.setHostnameVerifier((hostname, serverCertificate) -> true);
     }
 
+    @Override
+    public PublicKey getPeerRawPublicKey() {
+        return tlsEngine.getServerRawPublicKey();
+    }
+
+    private void useRawPublicKeys(Predicate<PublicKey> serverKeyVerifier, KeyPair clientKey) {
+        serverRawPublicKeyVerifier = serverKeyVerifier;
+        clientRawPublicKey = clientKey;
+    }
+
     protected void setTrustManager(X509TrustManager customTrustManager) {
         tlsEngine.setTrustManager(customTrustManager);
     }
@@ -1412,6 +1432,8 @@ public class QuicClientConnectionImpl extends QuicConnectionImpl implements Quic
         private boolean enableDatagramExtension;
         private boolean enableReliableStreamReset;
         private X509ExtendedKeyManager keyManager;
+        private Predicate<PublicKey> serverRawPublicKeyVerifier;
+        private KeyPair clientRawPublicKey;
 
         private BuilderImpl() {
             connectionProperties.setMaxIdleTimeout(DEFAULT_MAX_IDLE_TIMEOUT);
@@ -1453,6 +1475,10 @@ public class QuicClientConnectionImpl extends QuicConnectionImpl implements Quic
 
             if (quantumReadinessTest != null) {
                 quicConnection.enableQuantumReadinessTest(quantumReadinessTest);
+            }
+
+            if (serverRawPublicKeyVerifier != null) {
+                quicConnection.useRawPublicKeys(serverRawPublicKeyVerifier, clientRawPublicKey);
             }
 
             if (enableDatagramExtension) {
@@ -1760,6 +1786,18 @@ public class QuicClientConnectionImpl extends QuicConnectionImpl implements Quic
         @Override
         public Builder clientCertificateKey(PrivateKey privateKey) {
             this.clientCertificateKey = privateKey;
+            return this;
+        }
+
+        @Override
+        public Builder serverRawPublicKey(Predicate<PublicKey> verifier) {
+            this.serverRawPublicKeyVerifier = verifier;
+            return this;
+        }
+
+        @Override
+        public Builder clientRawPublicKey(KeyPair keyPair) {
+            this.clientRawPublicKey = keyPair;
             return this;
         }
 

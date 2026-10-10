@@ -18,6 +18,7 @@
  */
 package tech.kwik.core.server.impl;
 
+import tech.kwik.agent15.TlsConstants;
 import tech.kwik.agent15.engine.TlsServerEngineFactory;
 import tech.kwik.core.QuicConnection;
 import tech.kwik.core.QuicConstants;
@@ -51,7 +52,9 @@ import java.net.DatagramSocket;
 import java.net.InetSocketAddress;
 import java.net.SocketException;
 import java.nio.ByteBuffer;
+import java.security.KeyPair;
 import java.security.KeyStore;
+import java.security.PublicKey;
 import java.security.cert.CertificateException;
 import java.security.spec.InvalidKeySpecException;
 import java.time.Duration;
@@ -62,6 +65,7 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.*;
+import java.util.function.Predicate;
 import java.util.stream.Collectors;
 
 import static tech.kwik.core.common.EncryptionLevel.Initial;
@@ -520,6 +524,8 @@ public class ServerConnectorImpl implements ServerConnector {
         private String certificateAlias;
         private char[] privateKeyPassword;
         private String ecCurve;
+        private KeyPair rawPublicKey;
+        private Predicate<PublicKey> clientRawPublicKeyVerifier;
 
         @Override
         public ServerConnector.Builder withPort(int port) {
@@ -568,6 +574,18 @@ public class ServerConnectorImpl implements ServerConnector {
         }
 
         @Override
+        public ServerConnector.Builder withRawPublicKey(KeyPair keyPair) {
+            this.rawPublicKey = Objects.requireNonNull(keyPair);
+            return this;
+        }
+
+        @Override
+        public ServerConnector.Builder requireClientRawPublicKey(Predicate<PublicKey> verifier) {
+            this.clientRawPublicKeyVerifier = Objects.requireNonNull(verifier);
+            return this;
+        }
+
+        @Override
         public ServerConnector.Builder withSupportedVersions(List<QuicConnection.QuicVersion> supportedVersions) {
             this.supportedVersions.addAll(supportedVersions);
             return this;
@@ -596,7 +614,7 @@ public class ServerConnectorImpl implements ServerConnector {
             if (socket == null && port == 0) {
                 throw new IllegalStateException("port number not set");
             }
-            if (certificateFile == null && keyStore == null) {
+            if (certificateFile == null && keyStore == null && rawPublicKey == null) {
                 throw new IllegalStateException("server certificate not set");
             }
 
@@ -606,11 +624,17 @@ public class ServerConnectorImpl implements ServerConnector {
 
             try {
                 TlsServerEngineFactory tlsEngineFactory;
-                if (keyStore != null) {
+                if (rawPublicKey != null) {
+                    tlsEngineFactory = new TlsServerEngineFactory(rawPublicKey.getPublic(), rawPublicKey.getPrivate());
+                }
+                else if (keyStore != null) {
                     tlsEngineFactory = new TlsServerEngineFactory(keyStore, certificateAlias, privateKeyPassword, ecCurve);
                 }
                 else {
                     tlsEngineFactory = new TlsServerEngineFactory(certificateFile, certificateKeyFile);
+                }
+                if (clientRawPublicKeyVerifier != null) {
+                    tlsEngineFactory.requireClientRawPublicKey(clientRawPublicKeyVerifier, List.of(TlsConstants.SignatureScheme.ed25519));
                 }
                 return new ServerConnectorImpl(socket, tlsEngineFactory, supportedVersions, configuration, log);
             }

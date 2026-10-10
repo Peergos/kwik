@@ -30,9 +30,12 @@ import java.net.SocketException;
 import java.net.URI;
 import java.net.UnknownHostException;
 import java.nio.file.Path;
+import java.security.KeyPair;
 import java.security.KeyStore;
 import java.security.PrivateKey;
+import java.security.PublicKey;
 import java.security.cert.X509Certificate;
+import java.util.function.Predicate;
 import java.time.Duration;
 import java.util.List;
 
@@ -191,6 +194,21 @@ public interface QuicClientConnection extends QuicConnection {
         Builder clientCertificate(X509Certificate certificate);
 
         Builder clientCertificateKey(PrivateKey privateKey);
+
+        /**
+         * Requires the server to authenticate with an Ed25519 raw public key (RFC 7250) instead of a certificate; the
+         * verifier decides whether the key is the expected one. No server name indication is sent.
+         * @param verifier  returns whether the server's key is accepted
+         * @return  the builder
+         */
+        Builder serverRawPublicKey(Predicate<PublicKey> verifier);
+
+        /**
+         * Sets the Ed25519 key pair to authenticate with when the server requests a raw public key (RFC 7250).
+         * Only used together with {@link #serverRawPublicKey(Predicate)}.
+         * @return  the builder
+         */
+        Builder clientRawPublicKey(KeyPair keyPair);
 
         /**
          * Sets the key manager that will be used to authenticate the client to the server. The key manager should

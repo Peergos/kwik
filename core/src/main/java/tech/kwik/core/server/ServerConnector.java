@@ -25,7 +25,10 @@ import tech.kwik.core.server.impl.ServerConnectorImpl;
 import java.io.InputStream;
 import java.net.DatagramSocket;
 import java.net.SocketException;
+import java.security.KeyPair;
 import java.security.KeyStore;
+import java.security.PublicKey;
+import java.util.function.Predicate;
 import java.security.cert.CertificateException;
 import java.util.List;
 import java.util.Set;
@@ -84,6 +87,22 @@ public interface ServerConnector extends AutoCloseable {
          * @return
          */
         Builder withKeyStore(KeyStore keyStore, String certificateAlias, char[] privateKeyPassword, String ecCurve);
+
+        /**
+         * Authenticates the server with an Ed25519 raw public key (RFC 7250) instead of a certificate; clients that
+         * do not accept raw public keys are refused.
+         * @param keyPair  the server's key pair
+         * @return  the builder
+         */
+        Builder withRawPublicKey(KeyPair keyPair);
+
+        /**
+         * Requires clients to authenticate with an Ed25519 raw public key (RFC 7250); use
+         * {@link tech.kwik.core.QuicConnection#getPeerRawPublicKey()} to obtain it.
+         * @param verifier  returns whether the client's key is accepted
+         * @return  the builder
+         */
+        Builder requireClientRawPublicKey(Predicate<PublicKey> verifier);
 
         Builder withSupportedVersions(List<QuicConnection.QuicVersion> supportedVersions);
 

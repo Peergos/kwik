@@ -58,6 +58,7 @@ import tech.kwik.core.util.Bytes;
 import tech.kwik.core.util.InetTools;
 
 import java.io.IOException;
+import java.security.PublicKey;
 import java.net.DatagramSocket;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
@@ -712,6 +713,11 @@ public class ServerConnectionImpl extends QuicConnectionImpl implements ServerCo
     }
 
 
+    @Override
+    public PublicKey getPeerRawPublicKey() {
+        return tlsEngine.getClientRawPublicKey();
+    }
+
     private class TlsMessageSender implements ServerMessageSender {
         @Override
         public void send(ServerHello sh) {
@@ -730,6 +736,11 @@ public class ServerConnectionImpl extends QuicConnectionImpl implements ServerCo
         @Override
         public void send(EncryptedExtensions ee) {
             getCryptoStream(EncryptionLevel.Handshake).write(ee, false);
+        }
+
+        @Override
+        public void send(CertificateRequestMessage cr) throws IOException {
+            getCryptoStream(EncryptionLevel.Handshake).write(cr, false);
         }
 
         @Override

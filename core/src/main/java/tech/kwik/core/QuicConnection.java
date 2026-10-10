@@ -19,6 +19,7 @@
 package tech.kwik.core;
 
 import java.io.IOException;
+import java.security.PublicKey;
 import java.time.Duration;
 import java.util.function.Consumer;
 
@@ -141,4 +142,11 @@ public interface QuicConnection extends DatagramExtension {
     void close(long applicationErrorCode, String errorReason);
 
     Statistics getStats();
+
+    /**
+     * @return  the raw public key (RFC 7250) the peer authenticated with, or null when it did not use one
+     */
+    default PublicKey getPeerRawPublicKey() {
+        return null;
+    }
 }
