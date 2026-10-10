@@ -48,6 +48,8 @@ public class TransportParameters {
     private VersionInformation versionInformation;
     // https://www.rfc-editor.org/rfc/rfc9221.html#section-3
     private long maxDatagramFrameSize;
+    // QUIC Address Discovery role: 0 = send only, 1 = receive only, 2 = both; null when absent
+    private Integer addressDiscoveryRole;
     // https://www.ietf.org/archive/id/draft-ietf-quic-reliable-stream-reset-07.html#section-3
     private boolean resetStreamAtSupport;
 
@@ -263,6 +265,14 @@ public class TransportParameters {
 
     public long getMaxDatagramFrameSize() {
         return maxDatagramFrameSize;
+    }
+
+    public Integer getAddressDiscoveryRole() {
+        return addressDiscoveryRole;
+    }
+
+    public void setAddressDiscoveryRole(Integer addressDiscoveryRole) {
+        this.addressDiscoveryRole = addressDiscoveryRole;
     }
 
     public void setMaxDatagramFrameSize(long maxDatagramFrameSize) {

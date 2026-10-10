@@ -367,6 +367,8 @@ public class QuicClientConnectionImpl extends QuicConnectionImpl implements Quic
             parameters.setResetStreamAtSupported(true);
         }
 
+        parameters.setAddressDiscoveryRole(getAddressDiscoveryRole());
+
         return parameters;
     }
 
@@ -827,6 +829,7 @@ public class QuicClientConnectionImpl extends QuicConnectionImpl implements Quic
         // "At the client, the handshake is considered confirmed when a HANDSHAKE_DONE frame is received."
         sender.discard(PnSpace.Handshake, "HandshakeDone is received");
         connectionSecrets.discardKeys(Handshake);
+        reportObservedAddress(new InetSocketAddress(serverAddress, serverPort));
     }
 
     @Override
@@ -1501,6 +1504,8 @@ public class QuicClientConnectionImpl extends QuicConnectionImpl implements Quic
         private Predicate<PublicKey> serverRawPublicKeyVerifier;
         private KeyPair clientRawPublicKey;
         private SharedEndpoint sharedEndpoint;
+        private boolean sendObservedAddress;
+        private boolean receiveObservedAddress;
 
         private BuilderImpl() {
             connectionProperties.setMaxIdleTimeout(DEFAULT_MAX_IDLE_TIMEOUT);
@@ -1546,6 +1551,10 @@ public class QuicClientConnectionImpl extends QuicConnectionImpl implements Quic
 
             if (serverRawPublicKeyVerifier != null) {
                 quicConnection.useRawPublicKeys(serverRawPublicKeyVerifier, clientRawPublicKey);
+            }
+
+            if (sendObservedAddress || receiveObservedAddress) {
+                quicConnection.enableAddressDiscovery(sendObservedAddress, receiveObservedAddress);
             }
 
             if (enableDatagramExtension) {
@@ -1865,6 +1874,13 @@ public class QuicClientConnectionImpl extends QuicConnectionImpl implements Quic
         @Override
         public Builder clientRawPublicKey(KeyPair keyPair) {
             this.clientRawPublicKey = keyPair;
+            return this;
+        }
+
+        @Override
+        public Builder addressDiscovery(boolean send, boolean receive) {
+            this.sendObservedAddress = send;
+            this.receiveObservedAddress = receive;
             return this;
         }
 

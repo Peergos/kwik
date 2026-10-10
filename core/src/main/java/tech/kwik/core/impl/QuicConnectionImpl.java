@@ -42,6 +42,7 @@ import tech.kwik.core.util.ProgressivelyIncreasingRateLimiter;
 import tech.kwik.core.util.RateLimiter;
 
 import java.io.IOException;
+import java.net.InetSocketAddress;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.time.Instant;
@@ -65,6 +66,13 @@ import static tech.kwik.core.util.Bytes.bytesToHex;
 
 
 public abstract class QuicConnectionImpl implements QuicConnection, PacketProcessor, FrameProcessor, PacketFilter {
+
+    private volatile Integer addressDiscoveryRole;
+    private volatile Integer peerAddressDiscoveryRole;
+    private volatile long nextObservedAddressSequenceNumber;
+    private volatile long lastObservedAddressSequenceNumber = -1;
+    private volatile InetSocketAddress observedAddress;
+    private volatile Consumer<InetSocketAddress> observedAddressListener;
 
     public enum Status {
         Created,
@@ -341,7 +349,74 @@ public abstract class QuicConnectionImpl implements QuicConnection, PacketProces
      * Process the transport parameters that are common to client and server.
      * @param peerTransportParams  the transport parameters to process
      */
+    /**
+     * Enables QUIC Address Discovery: whether to report the peer's observed address to it and/or to accept reports
+     * of our own. Must be called before the transport parameters are sent.
+     */
+    public void enableAddressDiscovery(boolean send, boolean receive) {
+        addressDiscoveryRole = send && receive? 2: send? 0: receive? 1: null;
+    }
+
+    protected Integer getAddressDiscoveryRole() {
+        return addressDiscoveryRole;
+    }
+
+    private static boolean sends(Integer role) {
+        return role != null && (role == 0 || role == 2);
+    }
+
+    private static boolean receives(Integer role) {
+        return role != null && (role == 1 || role == 2);
+    }
+
+    /**
+     * Reports the peer's address as observed by this endpoint, when negotiated. Retransmitted when lost, unless a
+     * newer report was sent since.
+     */
+    protected void reportObservedAddress(InetSocketAddress peerAddress) {
+        if (sends(addressDiscoveryRole) && receives(peerAddressDiscoveryRole) && peerAddress != null) {
+            long sequenceNumber = nextObservedAddressSequenceNumber++;
+            sendObservedAddress(new ObservedAddressFrame(sequenceNumber, peerAddress));
+        }
+    }
+
+    private void sendObservedAddress(ObservedAddressFrame frame) {
+        send(frame, lost -> {
+            if (frame.getSequenceNumber() == nextObservedAddressSequenceNumber - 1) {
+                sendObservedAddress(frame);
+            }
+        }, true);
+    }
+
+    @Override
+    public InetSocketAddress getObservedAddress() {
+        return observedAddress;
+    }
+
+    @Override
+    public void setObservedAddressListener(Consumer<InetSocketAddress> listener) {
+        observedAddressListener = listener;
+    }
+
+    @Override
+    public void process(ObservedAddressFrame observedAddressFrame, QuicPacket packet, PacketMetaData metaData) {
+        if (!(receives(addressDiscoveryRole) && sends(peerAddressDiscoveryRole))) {
+            immediateCloseWithError(PROTOCOL_VIOLATION.value, "OBSERVED_ADDRESS frame received when not negotiated");
+            return;
+        }
+        // Reports can arrive out of order; only a newer one replaces the current address.
+        if (observedAddressFrame.getSequenceNumber() > lastObservedAddressSequenceNumber) {
+            lastObservedAddressSequenceNumber = observedAddressFrame.getSequenceNumber();
+            observedAddress = observedAddressFrame.getAddress();
+            Consumer<InetSocketAddress> listener = observedAddressListener;
+            if (listener != null) {
+                callbackThread.submit(() -> listener.accept(observedAddressFrame.getAddress()));
+            }
+        }
+    }
+
     protected void processCommonTransportParameters(TransportParameters peerTransportParams) {
+        peerAddressDiscoveryRole = peerTransportParams.getAddressDiscoveryRole();
         getStreamManager().setInitialMaxStreamsBidi(peerTransportParams.getInitialMaxStreamsBidi());
         getStreamManager().setInitialMaxStreamsUni(peerTransportParams.getInitialMaxStreamsUni());
 

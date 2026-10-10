@@ -219,6 +219,14 @@ public interface QuicClientConnection extends QuicConnection {
         Builder sharedEndpoint(SharedEndpoint endpoint);
 
         /**
+         * Enables QUIC Address Discovery (draft-ietf-quic-address-discovery, as implemented by noq/iroh).
+         * @param send     report the server's observed address to it
+         * @param receive  accept reports of this client's observed address, see {@link QuicConnection#getObservedAddress()}
+         * @return  the builder
+         */
+        Builder addressDiscovery(boolean send, boolean receive);
+
+        /**
          * Sets the key manager that will be used to authenticate the client to the server. The key manager should
          * contain the client's private key(s) and certificate(s) it wants to use for authentication.
          * The first certificate whose issuer corresponds to one of the authorities indicated by the server is used.

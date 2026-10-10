@@ -58,6 +58,8 @@ public class QuicTransportParametersExtension implements Extension {
     private static final long RESET_STREAM_AT_PARAMETER_ID = 0x1d;
     // https://www.ietf.org/archive/id/draft-ietf-quic-reliable-stream-reset-07.html#section-3
     private static final long RESET_STREAM_AT_PARAMETER_ID_DRAFT_07 = 0x17f7586d2cb571L;
+    // QUIC Address Discovery, the codepoint noq (and so iroh) uses
+    public static final long ADDRESS_DISCOVERY_PARAMETER_ID = 0x9f81a176L;
 
     private static final int MINIMUM_EXTENSION_LENGTH = 2;
     public static final int CODEPOINT_IETFDRAFT = 0xffa5;
@@ -230,6 +232,12 @@ public class QuicTransportParametersExtension implements Extension {
             addTransportParameter(buffer, MAX_DATAGRAM_FRAME_SIZE, params.getMaxDatagramFrameSize());
         }
 
+        if (params.getAddressDiscoveryRole() != null) {
+            VariableLengthInteger.encode(ADDRESS_DISCOVERY_PARAMETER_ID, buffer);
+            VariableLengthInteger.encode(VariableLengthInteger.bytesNeeded(params.getAddressDiscoveryRole()), buffer);
+            VariableLengthInteger.encode(params.getAddressDiscoveryRole(), buffer);
+        }
+
         if (params.isResetStreamAtSupported()) {
             addTransportParameter(buffer, RESET_STREAM_AT_PARAMETER_ID);
             addTransportParameter(buffer, RESET_STREAM_AT_PARAMETER_ID_DRAFT_07);
@@ -393,6 +401,14 @@ public class QuicTransportParametersExtension implements Extension {
             long datagramMaxFrameSize = VariableLengthInteger.parseLong(buffer);
             log.debug("- max datagram frame size: " + datagramMaxFrameSize);
             params.setMaxDatagramFrameSize(datagramMaxFrameSize);
+        }
+        else if (parameterId == ADDRESS_DISCOVERY_PARAMETER_ID) {
+            long role = VariableLengthInteger.parseLong(buffer);
+            if (role < 0 || role > 2) {
+                throw new TransportError(QuicConstants.TransportErrorCode.TRANSPORT_PARAMETER_ERROR, "invalid address discovery role");
+            }
+            log.debug("- address discovery role: " + role);
+            params.setAddressDiscoveryRole((int) role);
         }
         else if (parameterId == RESET_STREAM_AT_PARAMETER_ID || parameterId == RESET_STREAM_AT_PARAMETER_ID_DRAFT_07) {
             if (size != 0) {

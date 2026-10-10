@@ -362,6 +362,35 @@ class QuicTransportParametersExtensionTest {
     }
 
     @Test
+    void parseAddressDiscoveryRole() throws Exception {
+        //                                           ext size  id (8-byte VLI 0x9f81a176)  sz value
+        byte[] rawData = ByteUtils.hexToBytes("00 39 00 0a     c0 00 00 00 9f 81 a1 76 01 02".replaceAll(" ", ""));
+        var transportParametersExtension = new QuicTransportParametersExtension(Version.QUIC_version_1);
+        transportParametersExtension.parse(ByteBuffer.wrap(rawData), Role.Client, mock(Logger.class));
+        assertThat(transportParametersExtension.getTransportParameters().getAddressDiscoveryRole()).isEqualTo(2);
+    }
+
+    @Test
+    void invalidAddressDiscoveryRoleIsTransportParameterError() {
+        byte[] rawData = ByteUtils.hexToBytes("00 39 00 0a     c0 00 00 00 9f 81 a1 76 01 03".replaceAll(" ", ""));
+        var transportParametersExtension = new QuicTransportParametersExtension(Version.QUIC_version_1);
+        org.assertj.core.api.Assertions.assertThatThrownBy(() ->
+                transportParametersExtension.parse(ByteBuffer.wrap(rawData), Role.Client, mock(Logger.class)))
+                .isInstanceOf(Exception.class);
+    }
+
+    @Test
+    void addressDiscoveryRoleRoundTrips() throws Exception {
+        TransportParameters params = new TransportParameters(10, 1_048_576, 1024, 256);
+        params.setInitialSourceConnectionId(new byte[] { 0x01, 0x02, 0x03, 0x04 });
+        params.setAddressDiscoveryRole(1);
+        byte[] serialized = new QuicTransportParametersExtension(Version.getDefault(), params, Role.Client).getBytes();
+        var parsed = new QuicTransportParametersExtension(Version.getDefault());
+        parsed.parse(ByteBuffer.wrap(serialized), Role.Server, mock(Logger.class));
+        assertThat(parsed.getTransportParameters().getAddressDiscoveryRole()).isEqualTo(1);
+    }
+
+    @Test
     void parseResetStreamAtTransportParameterDraft07() throws Exception {
         //                                           ext size  id sz
         byte[] rawData = ByteUtils.hexToBytes("00 39 00 02     1d 00".replaceAll(" ", ""));

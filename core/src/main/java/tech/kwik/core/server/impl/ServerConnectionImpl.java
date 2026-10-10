@@ -302,6 +302,7 @@ public class ServerConnectionImpl extends QuicConnectionImpl implements ServerCo
         // "The server MUST send a HANDSHAKE_DONE frame as soon as it completes the handshake."
         sendHandshakeDone(new HandshakeDoneFrame(quicVersion.getVersion()));
         connectionState = Connected;
+        reportObservedAddress(socketManager.getClientAddress());
 
         synchronized (handshakeStateLock) {
             if (handshakeState.transitionAllowed(HandshakeState.Confirmed)) {
@@ -412,6 +413,10 @@ public class ServerConnectionImpl extends QuicConnectionImpl implements ServerCo
         if (protocolSettings.enableReliableStreamReset()) {
             enableReliableStreamReset();
         }
+
+        if (protocolSettings.sendObservedAddressReports() || protocolSettings.receiveObservedAddressReports()) {
+            enableAddressDiscovery(protocolSettings.sendObservedAddressReports(), protocolSettings.receiveObservedAddressReports());
+        }
     }
 
     TransportParameters initTransportParameters() {
@@ -430,6 +435,8 @@ public class ServerConnectionImpl extends QuicConnectionImpl implements ServerCo
         if (reliableStreamResetEnabled) {
             parameters.setResetStreamAtSupported(true);
         }
+
+        parameters.setAddressDiscoveryRole(getAddressDiscoveryRole());
 
         return parameters;
     }

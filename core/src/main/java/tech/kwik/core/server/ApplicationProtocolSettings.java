@@ -86,4 +86,14 @@ public interface ApplicationProtocolSettings {
      * @return
      */
     default boolean enableReliableStreamReset() { return false; }
+
+    /**
+     * Whether to report the client's observed address to it (QUIC Address Discovery), when the client wants that.
+     */
+    default boolean sendObservedAddressReports() { return false; }
+
+    /**
+     * Whether to accept reports of this server's observed address from clients (QUIC Address Discovery).
+     */
+    default boolean receiveObservedAddressReports() { return false; }
 }

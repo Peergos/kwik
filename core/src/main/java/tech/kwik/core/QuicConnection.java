@@ -19,6 +19,7 @@
 package tech.kwik.core;
 
 import java.io.IOException;
+import java.net.InetSocketAddress;
 import java.security.PublicKey;
 import java.time.Duration;
 import java.util.function.Consumer;
@@ -148,5 +149,18 @@ public interface QuicConnection extends DatagramExtension {
      */
     default PublicKey getPeerRawPublicKey() {
         return null;
+    }
+
+    /**
+     * @return  this endpoint's address as most recently reported by the peer (QUIC Address Discovery), or null
+     */
+    default InetSocketAddress getObservedAddress() {
+        return null;
+    }
+
+    /**
+     * Sets a listener that is called whenever the peer reports a new observed address (QUIC Address Discovery).
+     */
+    default void setObservedAddressListener(Consumer<InetSocketAddress> listener) {
     }
 }

@@ -51,4 +51,7 @@ public interface FrameProcessor {
     void process(StreamDataBlockedFrame streamDataBlockedFrame, QuicPacket packet, PacketMetaData metaData);
 
     void process(StreamsBlockedFrame streamsBlockedFrame, QuicPacket packet, PacketMetaData metaData);
+
+    default void process(ObservedAddressFrame observedAddressFrame, QuicPacket packet, PacketMetaData metaData) {
+    }
 }

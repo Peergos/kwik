@@ -25,6 +25,7 @@ import tech.kwik.core.crypto.Aead;
 import tech.kwik.core.frame.*;
 import tech.kwik.core.generic.IntegerTooLargeException;
 import tech.kwik.core.generic.InvalidIntegerEncodingException;
+import tech.kwik.core.generic.VariableLengthInteger;
 import tech.kwik.core.impl.*;
 import tech.kwik.core.log.Logger;
 
@@ -309,6 +310,16 @@ abstract public class QuicPacket {
                 buffer.mark();
                 frameType = buffer.get();
                 buffer.reset();
+                if ((frameType & 0xc0) != 0) {
+                    // A frame type encoded in more than one byte, which only extension frames use.
+                    long longFrameType = VariableLengthInteger.parseLong(buffer);
+                    buffer.reset();
+                    if (ObservedAddressFrame.isObservedAddressFrameType(longFrameType)) {
+                        frames.add(new ObservedAddressFrame().parse(buffer, log));
+                        continue;
+                    }
+                    throw new TransportError(QuicConstants.TransportErrorCode.FRAME_ENCODING_ERROR);
+                }
                 switch (frameType) {
                     case 0x00:
                         frames.add(new Padding().parse(buffer, log));
