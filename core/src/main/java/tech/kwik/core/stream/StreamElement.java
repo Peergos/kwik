@@ -27,6 +27,17 @@ public interface StreamElement extends Comparable<StreamElement> {
 
     byte[] getStreamData();
 
+    /**
+     * The array holding the data, starting at getStreamDataOffset(); unlike getStreamData(), this does not copy.
+     */
+    default byte[] getStreamDataArray() {
+        return getStreamData();
+    }
+
+    default int getStreamDataOffset() {
+        return 0;
+    }
+
     long getUpToOffset();
 
     boolean isFinal();

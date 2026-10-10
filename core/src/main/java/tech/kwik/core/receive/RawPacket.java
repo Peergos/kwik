@@ -44,7 +44,7 @@ public class RawPacket {
         this.receivedPacket = receivedPacket;
         this.timeReceived = timeReceived;
 
-        data = ByteBuffer.wrap(receivedPacket.getData(), 0, receivedPacket.getLength());
+        data = ByteBuffer.wrap(receivedPacket.getData(), receivedPacket.getOffset(), receivedPacket.getLength()).slice();
         this.peerAddress = (InetSocketAddress) receivedPacket.getSocketAddress();
         this.localAddress = localAddress;
         this.more = more;

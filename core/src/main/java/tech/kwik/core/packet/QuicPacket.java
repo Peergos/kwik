@@ -183,6 +183,11 @@ abstract public class QuicPacket {
         }
 
         int payloadStartPosition = buffer.position();
+        if (this instanceof ShortHeaderPacket && buffer.hasArray() && !buffer.isReadOnly() && !log.logDecrypted()) {
+            decryptInPlace(buffer, packetStartPosition, decryptedFlags, unprotectedPacketNumber, remainingLength - protectedPackageNumberLength, aead, log);
+            checkReservedBits(decryptedFlags);
+            return;
+        }
         // https://www.rfc-editor.org/rfc/rfc9001.html#section-5.3
         // "The associated data, A, for the AEAD is the contents of the QUIC header, starting from the first byte of
         //  either the short or long header, up to and including the unprotected packet number."
@@ -219,6 +224,36 @@ abstract public class QuicPacket {
         //  PROTOCOL_VIOLATION. Discarding such a packet after only removing header protection can expose the endpoint
         //  to attacks (...)."
         checkReservedBits(decryptedFlags);
+    }
+
+    /**
+     * Removes the header protection and decrypts the payload in the (array backed) buffer, from its position, and
+     * parses the frames.
+     */
+    private void decryptInPlace(ByteBuffer buffer, int packetStartPosition, byte decryptedFlags, byte[] unprotectedPacketNumber,
+                                int encryptedPayloadLength, Aead aead, Logger log) throws DecryptionException, InvalidPacketException, TransportError {
+        if (encryptedPayloadLength < 1) {
+            throw new InvalidPacketException();
+        }
+        int payloadStartPosition = buffer.position();
+        buffer.put(packetStartPosition, decryptedFlags);
+        buffer.put(payloadStartPosition - unprotectedPacketNumber.length, unprotectedPacketNumber);
+
+        if (this instanceof ShortHeaderPacket) {
+            aead.checkKeyPhase(((ShortHeaderPacket) this).keyPhaseBit);
+        }
+        byte[] nonce = aead.getIv().clone();
+        for (int i = 0; i < 8; i++) {
+            nonce[nonce.length - 1 - i] ^= (byte) (packetNumber >> (8 * i));
+        }
+        byte[] data = buffer.array();
+        int base = buffer.arrayOffset();
+        int plainLength = aead.aeadDecrypt(data, base + packetStartPosition, payloadStartPosition - packetStartPosition,
+                base + payloadStartPosition, encryptedPayloadLength, nonce);
+        buffer.position(payloadStartPosition + encryptedPayloadLength);
+
+        frames = new ArrayList<>();
+        parseFrames(ByteBuffer.wrap(data, base + payloadStartPosition, plainLength).slice(), log);
     }
 
     protected void setUnprotectedHeader(byte decryptedFlags) {}
@@ -304,7 +339,10 @@ abstract public class QuicPacket {
     }
 
     protected void parseFrames(byte[] frameBytes, Logger log) throws InvalidPacketException, TransportError {
-        ByteBuffer buffer = ByteBuffer.wrap(frameBytes);
+        parseFrames(ByteBuffer.wrap(frameBytes), log);
+    }
+
+    protected void parseFrames(ByteBuffer buffer, Logger log) throws InvalidPacketException, TransportError {
 
         int frameType = -1;
         try {

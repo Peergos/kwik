@@ -103,7 +103,7 @@ public class ReceiveBufferImpl implements ReceiveBuffer {
             // Never return data at or beyond the discard offset.
             long maxOffset = Long.min(discardOffset, nextFrame.getUpToOffset());
             int bytesToRead = (int) Long.min(buffer.remaining(), maxOffset - readUpToOffset);
-            buffer.put(nextFrame.getStreamData(), (int) (readUpToOffset - nextFrame.getOffset()), bytesToRead);
+            buffer.put(nextFrame.getStreamDataArray(), nextFrame.getStreamDataOffset() + (int) (readUpToOffset - nextFrame.getOffset()), bytesToRead);
             readUpToOffset += bytesToRead;
             totalBytesRead += bytesToRead;
             if (readUpToOffset == maxOffset) {
@@ -252,10 +252,10 @@ public class ReceiveBufferImpl implements ReceiveBuffer {
         int overlap = (int) (frame1.getUpToOffset() - frame2.getOffset());
         int newLength = frame1.getLength() + frame2.getLength() - overlap;
         byte[] combinedData = new byte[newLength];
-        System.arraycopy(frame1.getStreamData(), 0, combinedData, 0, frame1.getLength());
+        System.arraycopy(frame1.getStreamDataArray(), frame1.getStreamDataOffset(), combinedData, 0, frame1.getLength());
         System.arraycopy(
-                frame2.getStreamData(),
-                overlap,
+                frame2.getStreamDataArray(),
+                frame2.getStreamDataOffset() + overlap,
                 combinedData,
                 frame1.getLength(),
                 (int) (frame2.getLength() - overlap));
@@ -274,7 +274,7 @@ public class ReceiveBufferImpl implements ReceiveBuffer {
             return frame;
         }
         byte[] limitedData = new byte[newLength];
-        System.arraycopy(frame.getStreamData(), (int) (newStartOffset - frame.getOffset()), limitedData, 0, newLength);
+        System.arraycopy(frame.getStreamDataArray(), frame.getStreamDataOffset() + (int) (newStartOffset - frame.getOffset()), limitedData, 0, newLength);
         return new SimpleStreamElement(newStartOffset, limitedData, frame.isFinal());
     }
 

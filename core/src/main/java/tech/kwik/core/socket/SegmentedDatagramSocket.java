@@ -19,6 +19,7 @@
 package tech.kwik.core.socket;
 
 import java.io.IOException;
+import java.net.DatagramPacket;
 import java.net.InetSocketAddress;
 
 /**
@@ -38,4 +39,10 @@ public interface SegmentedDatagramSocket {
     default boolean moreReceived() {
         return false;
     }
+
+    /**
+     * Receives a datagram without copying it into a caller supplied buffer. The returned packet's data (between its
+     * offset and offset + length) belongs to the caller and is not reused by the socket.
+     */
+    DatagramPacket receive() throws IOException;
 }

@@ -40,7 +40,10 @@ public class ServerConnectionThread implements ServerConnectionProxy {
 
     private final ServerConnectionImpl serverConnection;
     private final BlockingQueue<ReceivedDatagram> queue;
+    // Datagrams whose 1-RTT packet the receiver thread has decrypted, for the processor thread.
+    private final BlockingQueue<ReceivedDatagram> parsed;
     private final Thread connectionReceiverThread;
+    private final Thread processorThread;
     private final List<InitialPacket> firstInitialPackets;
     private final ByteBuffer data;
     private final PacketMetaData firstInitialPacketMetaData;
@@ -55,8 +58,12 @@ public class ServerConnectionThread implements ServerConnectionProxy {
         this.log = log;
 
         queue = new LinkedBlockingQueue<>();
-        String threadId = "receiver-" + Bytes.bytesToHex(serverConnection.getOriginalDestinationConnectionId());
-        connectionReceiverThread = new Thread(this::process, threadId);
+        parsed = new LinkedBlockingQueue<>();
+        String id = Bytes.bytesToHex(serverConnection.getOriginalDestinationConnectionId());
+        PacketParser parser = serverConnection.createParser();
+        connectionReceiverThread = new Thread(() -> preParse(parser), "receiver-" + id);
+        processorThread = new Thread(() -> process(parser), "processor-" + id);
+        processorThread.start();
         connectionReceiverThread.start();
     }
 
@@ -88,15 +95,28 @@ public class ServerConnectionThread implements ServerConnectionProxy {
     @Override
     public void dispose() {
         connectionReceiverThread.interrupt();
+        processorThread.interrupt();
     }
 
-    private void process() {
+    private void preParse(PacketParser parser) {
+        try {
+            while (!connectionReceiverThread.isInterrupted()) {
+                ReceivedDatagram datagram = queue.take();
+                datagram.preParsed = parser.preParse(datagram.data);
+                parsed.add(datagram);
+            }
+        }
+        catch (InterruptedException e) {
+            // Terminate, see dispose()
+        }
+    }
+
+    private void process(PacketParser parser) {
         try {
             for (InitialPacket firstInitialPacket : firstInitialPackets) {
                 serverConnection.getPacketProcessorChain().processPacket(firstInitialPacket, firstInitialPacketMetaData);
             }
 
-            PacketParser parser = serverConnection.createParser();
             DatagramFilter datagramProcessingChain = wrapWithFilters(parser, serverConnection::increaseAntiAmplificationLimit, serverConnection::datagramProcessed);
 
             if (data.hasRemaining()) {
@@ -107,11 +127,17 @@ public class ServerConnectionThread implements ServerConnectionProxy {
                 datagramProcessingChain.processDatagram(data.slice(), firstInitialPacketMetaData);
             }
 
-            while (! connectionReceiverThread.isInterrupted()) {
-                ReceivedDatagram datagram = queue.take();
+            while (! processorThread.isInterrupted()) {
+                ReceivedDatagram datagram = parsed.take();
                 PacketMetaData metaData = new PacketMetaData(datagram.timeReceived, datagram.sourceAddress, datagram.datagramNumber, datagram.size);
-                serverConnection.getSender().moreDatagramsQueued(datagram.more || !queue.isEmpty());
-                datagramProcessingChain.processDatagram(datagram.data, metaData);
+                serverConnection.getSender().moreDatagramsQueued(datagram.more || !parsed.isEmpty() || !queue.isEmpty());
+                parser.setPreParsed(datagram.preParsed);
+                try {
+                    datagramProcessingChain.processDatagram(datagram.data, metaData);
+                }
+                finally {
+                    parser.setPreParsed(null);
+                }
             }
         }
         catch (TransportError error) {
@@ -131,6 +157,9 @@ public class ServerConnectionThread implements ServerConnectionProxy {
         catch (Throwable error) {
             // Of course, this should never happen. But if it does, there is no point in going on with this connection.
             serverConnection.abortConnection(error);
+        }
+        finally {
+            connectionReceiverThread.interrupt();
         }
     }
 
@@ -158,6 +187,7 @@ public class ServerConnectionThread implements ServerConnectionProxy {
         final InetSocketAddress sourceAddress;
         final int size;
         final boolean more;
+        Object preParsed;
 
         public ReceivedDatagram(int datagramNumber, Instant timeReceived, ByteBuffer data, InetSocketAddress sourceAddress, boolean more) {
             this.more = more;

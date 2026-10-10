@@ -52,6 +52,7 @@ public class CryptoTestUtils {
             when(keys.aeadEncrypt(any(), any(), any())).thenCallRealMethod();
             when(keys.aeadEncrypt(any(byte[].class), anyInt(), anyInt(), anyInt(), anyInt(), any())).thenCallRealMethod();
             when(keys.aeadDecrypt(any(), any(), any())).thenCallRealMethod();
+            when(keys.aeadDecrypt(any(byte[].class), anyInt(), anyInt(), anyInt(), anyInt(), any())).thenCallRealMethod();
             when(keys.createHeaderProtectionMask(any())).thenCallRealMethod();
 
             return keys;

@@ -122,9 +122,9 @@ public class SenderImpl implements Sender, CongestionControlEventListener, Hands
     private static final int MAX_BATCH_BYTES = 65000;
     // While received datagrams are queued, the sender is woken once per this many datagrams instead of for each, and
     // immediate acks are held until then, so acks cover more packets. Only accessed by the receiver thread.
-    private static final int MAX_DEFERRED_WAKE_UPS = 16;
-    private boolean moreDatagramsQueued;
-    private int deferredWakeUps;
+    private static final int MAX_DEFERRED_DATAGRAMS = 16;
+    private boolean deferWakeUp;
+    private int deferredDatagrams;
     private boolean ackHeld;
     private byte[] batchBuffer;
     private final MtuDiscovery mtuDiscovery;
@@ -226,7 +226,7 @@ public class SenderImpl implements Sender, CongestionControlEventListener, Hands
 
     @Override
     public void sendAck(PnSpace pnSpace, int maxDelay) {
-        if (maxDelay == 0 && pnSpace == PnSpace.App && moreDatagramsQueued) {
+        if (maxDelay == 0 && pnSpace == PnSpace.App && deferWakeUp) {
             ackHeld = true;
             maxDelay = 20;
         }
@@ -270,10 +270,9 @@ public class SenderImpl implements Sender, CongestionControlEventListener, Hands
     @Override
     public void packetProcessed(boolean expectingMore) {
         // If you change this, review this.sendAck()!
-        if (!expectingMore && moreDatagramsQueued && ++deferredWakeUps < MAX_DEFERRED_WAKE_UPS) {
+        if (deferWakeUp) {
             return;
         }
-        deferredWakeUps = 0;
         if (ackHeld) {
             ackHeld = false;
             sendRequestQueue[EncryptionLevel.App.ordinal()].addAckRequest(0);
@@ -283,7 +282,10 @@ public class SenderImpl implements Sender, CongestionControlEventListener, Hands
 
     @Override
     public void moreDatagramsQueued(boolean more) {
-        moreDatagramsQueued = more;
+        deferWakeUp = more && ++deferredDatagrams < MAX_DEFERRED_DATAGRAMS;
+        if (!deferWakeUp) {
+            deferredDatagrams = 0;
+        }
     }
 
     @Override

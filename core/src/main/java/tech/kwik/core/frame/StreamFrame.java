@@ -44,6 +44,7 @@ public class StreamFrame extends QuicFrame implements StreamElement {
     private long offset;
     private int length;
     private byte[] streamData;
+    private int streamDataOffset;
     private boolean isFinal;
     private int frameLength;
 
@@ -100,7 +101,7 @@ public class StreamFrame extends QuicFrame implements StreamElement {
         VariableLengthInteger.encode(streamId, buffer);
         VariableLengthInteger.encode(offset, buffer);
         VariableLengthInteger.encode(length, buffer);
-        buffer.put(streamData);
+        buffer.put(streamData, streamDataOffset, length);
     }
 
     @Override
@@ -132,11 +133,21 @@ public class StreamFrame extends QuicFrame implements StreamElement {
             length = buffer.limit() - buffer.position();
         }
 
-        streamData = new byte[length];
-        buffer.get(streamData);
+        if (buffer.hasArray() && !buffer.isReadOnly()) {
+            // The received datagram's buffer is not reused, so the data needs no copy.
+            streamData = buffer.array();
+            streamDataOffset = buffer.arrayOffset() + buffer.position();
+            buffer.position(buffer.position() + length);
+        }
+        else {
+            streamData = new byte[length];
+            buffer.get(streamData);
+        }
         frameLength = buffer.position() - startPosition;
 
-        log.decrypted("Stream data", streamData);
+        if (log.logDecrypted()) {
+            log.decrypted("Stream data", getStreamData());
+        }
 
         return this;
     }
@@ -155,7 +166,7 @@ public class StreamFrame extends QuicFrame implements StreamElement {
                 offset == that.offset &&
                 length == that.length &&
                 isFinal == that.isFinal &&
-                Arrays.equals(streamData, that.streamData);
+                Arrays.equals(streamData, streamDataOffset, streamDataOffset + length, that.streamData, that.streamDataOffset, that.streamDataOffset + that.length);
     }
 
     @Override
@@ -190,7 +201,20 @@ public class StreamFrame extends QuicFrame implements StreamElement {
     }
 
     public byte[] getStreamData() {
+        if (streamDataOffset == 0 && streamData.length == length) {
+            return streamData;
+        }
+        return Arrays.copyOfRange(streamData, streamDataOffset, streamDataOffset + length);
+    }
+
+    @Override
+    public byte[] getStreamDataArray() {
         return streamData;
+    }
+
+    @Override
+    public int getStreamDataOffset() {
+        return streamDataOffset;
     }
 
     @Override

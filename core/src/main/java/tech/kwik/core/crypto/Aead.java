@@ -42,6 +42,18 @@ public interface Aead {
      * data, and writes the tag after the ciphertext.
      * @return the length of the ciphertext including the tag
      */
+    /**
+     * Decrypts buffer[offset, offset + length), ciphertext followed by the tag, in place, with
+     * buffer[aadOffset, aadOffset + aadLength) as associated data.
+     * @return the length of the plaintext
+     */
+    default int aeadDecrypt(byte[] buffer, int aadOffset, int aadLength, int offset, int length, byte[] nonce) throws DecryptionException {
+        byte[] decrypted = aeadDecrypt(Arrays.copyOfRange(buffer, aadOffset, aadOffset + aadLength),
+                Arrays.copyOfRange(buffer, offset, offset + length), nonce);
+        System.arraycopy(decrypted, 0, buffer, offset, decrypted.length);
+        return decrypted.length;
+    }
+
     default int aeadEncrypt(byte[] buffer, int aadOffset, int aadLength, int offset, int length, byte[] nonce) {
         byte[] encrypted = aeadEncrypt(Arrays.copyOfRange(buffer, aadOffset, aadOffset + aadLength),
                 Arrays.copyOfRange(buffer, offset, offset + length), nonce);

@@ -139,6 +139,26 @@ public class Aes128Gcm extends BaseAeadImpl {
     }
 
     @Override
+    public int aeadDecrypt(byte[] buffer, int aadOffset, int aadLength, int offset, int length, byte[] nonce) throws DecryptionException {
+        if (length <= 16) {
+            throw new DecryptionException("ciphertext must be longer than 16 bytes");
+        }
+        Cipher aeadCipher = getCipher();
+        try {
+            aeadCipher.init(Cipher.DECRYPT_MODE, getKeySpec(), new GCMParameterSpec(128, nonce));
+            aeadCipher.updateAAD(buffer, aadOffset, aadLength);
+            return aeadCipher.doFinal(buffer, offset, length, buffer, offset);
+        }
+        catch (AEADBadTagException decryptError) {
+            throw new DecryptionException();
+        }
+        catch (GeneralSecurityException e) {
+            // Programming error
+            throw new RuntimeException(e);
+        }
+    }
+
+    @Override
     public byte[] aeadDecrypt(byte[] associatedData, byte[] message, byte[] nonce) throws DecryptionException {
         if (message.length <= 16) {
             // https://www.rfc-editor.org/rfc/rfc9001.html#name-aead-usage

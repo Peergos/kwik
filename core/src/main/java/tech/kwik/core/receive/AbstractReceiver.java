@@ -91,10 +91,16 @@ public abstract class AbstractReceiver implements Receiver {
 
         try {
             while (! isClosing) {
-                byte[] receiveBuffer = new byte[MAX_SUPPORTED_PACKET_SIZE];
-                DatagramPacket receivedPacket = new DatagramPacket(receiveBuffer, receiveBuffer.length);
                 try {
-                    socket.receive(receivedPacket);
+                    DatagramPacket receivedPacket;
+                    if (socket instanceof SegmentedDatagramSocket) {
+                        receivedPacket = ((SegmentedDatagramSocket) socket).receive();
+                    }
+                    else {
+                        byte[] receiveBuffer = new byte[MAX_SUPPORTED_PACKET_SIZE];
+                        receivedPacket = new DatagramPacket(receiveBuffer, receiveBuffer.length);
+                        socket.receive(receivedPacket);
+                    }
 
                     if (packetFilter.test(receivedPacket)) {
                         Instant timeReceived = Instant.now();

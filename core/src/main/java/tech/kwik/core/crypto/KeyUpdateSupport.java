@@ -68,6 +68,16 @@ public class KeyUpdateSupport implements Aead {
     }
 
     @Override
+    public int aeadDecrypt(byte[] buffer, int aadOffset, int aadLength, int offset, int length, byte[] nonce) throws DecryptionException {
+        if (possibleKeyUpdateInProgresss) {
+            return updatedAead.aeadDecrypt(buffer, aadOffset, aadLength, offset, length, nonce);
+        }
+        else {
+            return aead.aeadDecrypt(buffer, aadOffset, aadLength, offset, length, nonce);
+        }
+    }
+
+    @Override
     public int aeadEncrypt(byte[] buffer, int aadOffset, int aadLength, int offset, int length, byte[] nonce) {
         return aead.aeadEncrypt(buffer, aadOffset, aadLength, offset, length, nonce);
     }
