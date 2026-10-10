@@ -240,6 +240,38 @@ public class PathManager {
         }
     }
 
+    public boolean isAbandoned(long pathId) {
+        PathConnectionIds path = paths.get(pathId);
+        return path != null && path.abandoned;
+    }
+
+    /**
+     * Marks the path ID as abandoned: it is never used again, and the peer's connection IDs for it are retired
+     * (https://www.ietf.org/archive/id/draft-ietf-quic-multipath-21.html#section-3.4). Local connection IDs are
+     * released after the given delay, so late packets on the path are still recognised.
+     */
+    public void abandon(long pathId, java.util.concurrent.ScheduledExecutorService scheduler, long releaseDelayMillis) {
+        PathConnectionIds path = path(pathId);
+        synchronized (path) {
+            if (path.abandoned) {
+                return;
+            }
+            path.abandoned = true;
+            path.peer.clear();
+        }
+        Runnable release = () -> {
+            synchronized (path) {
+                new java.util.ArrayList<>(path.local.keySet()).forEach(sequenceNr -> release(path, sequenceNr));
+            }
+        };
+        if (scheduler != null) {
+            scheduler.schedule(release, releaseDelayMillis, java.util.concurrent.TimeUnit.MILLISECONDS);
+        }
+        else {
+            release.run();
+        }
+    }
+
     public long getLocalMaxPathId() {
         return localMaxPathId;
     }

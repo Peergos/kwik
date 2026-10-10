@@ -156,6 +156,25 @@ public class LossDetector {
     /**
      * Reset to initial state.
      */
+    /**
+     * Treats every packet in flight as lost, so their frames are retransmitted (elsewhere): for an abandoned
+     * multipath path. The congestion window is left alone.
+     */
+    public void declareAllLost() {
+        List<PacketStatus> inflightPackets;
+        synchronized (this) {
+            inflightPackets = packetSentLog.values().stream()
+                    .filter(packet -> packet.inFlight())
+                    .filter(packetStatus -> packetStatus.setLost())
+                    .collect(Collectors.toList());
+            congestionController.discard(inflightPackets);
+            packetSentLog.clear();
+            ackElicitingInFlight.set(0);
+        }
+        inflightPackets.forEach(packetStatus -> packetStatus.lostPacketCallback().accept(packetStatus.packet()));
+        postProcessLostCallback.run();
+    }
+
     public synchronized void reset() {
         List<PacketStatus> inflightPackets = packetSentLog.values().stream()
                 .filter(packet -> packet.inFlight())

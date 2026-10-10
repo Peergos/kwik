@@ -53,6 +53,8 @@ public class AckGenerator {
     private int acksNotSend = 0;
     private volatile Instant lastAckRangesCleanup;
     private final RecoveryStatusProvider recoveryStatusProvider;
+    // The multipath path whose packets this generator acknowledges, with PATH_ACK frames; -1 for ACK frames.
+    private volatile long pathId = -1;
     private final int largeAckSentLogThreshold;
     private final int largeRangesToAcknowledgeThreshold;
 
@@ -73,6 +75,13 @@ public class AckGenerator {
         this.largeRangesToAcknowledgeThreshold = largeMaintainedStateThreshold;
         lastAckRangesCleanup = clock.instant();
         this.recoveryStatusProvider = recoveryStatusProvider;
+    }
+
+    /**
+     * Makes this generator acknowledge with PATH_ACK frames for the given path.
+     */
+    public void setPathId(long pathId) {
+        this.pathId = pathId;
     }
 
     public synchronized boolean hasAckToSend() {
@@ -222,7 +231,7 @@ public class AckGenerator {
         }
         if (!rangesToAcknowledge.isEmpty()) {
             // Range list must not be modified during frame initialization (guaranteed by this method being sync'd)
-            return Optional.of(new AckFrame(quicVersion, this.rangesToAcknowledge, delay));
+            return Optional.of(new AckFrame(quicVersion, pathId, this.rangesToAcknowledge, delay));
         }
         else {
             return Optional.empty();

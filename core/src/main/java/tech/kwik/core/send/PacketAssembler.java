@@ -60,6 +60,8 @@ public class PacketAssembler {
     private final PacketNumberGenerator packetNumberGenerator;
     protected long nextPacketNumber;
     private volatile boolean stopping;
+    // The multipath path the packets are for; 0 for the initial path and without multipath.
+    private volatile long pathId;
     private Consumer<PacketAssembler> finalizerCallback;
 
 
@@ -247,6 +249,10 @@ public class PacketAssembler {
         return new SendItem(packet, lostCallback, clientAddress);
     }
 
+    public void setPathId(long pathId) {
+        this.pathId = pathId;
+    }
+
     protected long nextPacketNumber() {
         return packetNumberGenerator.nextPacketNumber();
     }
@@ -280,6 +286,7 @@ public class PacketAssembler {
                 break;
             case App:
                 packet = new ShortHeaderPacket(version, destinationConnectionId);
+                packet.setPathId(pathId);
                 break;
             case ZeroRTT:
                 packet = new ZeroRttPacket(version, cidProvider.getInitialConnectionId(), destinationConnectionId, (QuicFrame) null);

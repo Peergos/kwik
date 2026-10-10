@@ -29,6 +29,7 @@ import tech.kwik.core.common.PnSpace;
 import tech.kwik.core.crypto.Aead;
 import tech.kwik.core.crypto.ConnectionSecrets;
 import tech.kwik.core.crypto.MissingKeysException;
+import tech.kwik.core.frame.Padding;
 import tech.kwik.core.frame.PathChallengeFrame;
 import tech.kwik.core.frame.PathResponseFrame;
 import tech.kwik.core.frame.QuicFrame;
@@ -55,6 +56,14 @@ import java.util.Arrays;
 import java.util.Collections;
 import java.util.Iterator;
 import java.util.List;
+import tech.kwik.core.cid.ConnectionIdProvider;
+import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.Collection;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.Map;
+import java.util.HashSet;
+import java.util.Set;
 import java.util.Optional;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Consumer;
@@ -126,8 +135,14 @@ public class SenderImpl implements Sender, CongestionControlEventListener, Hands
     private boolean deferWakeUp;
     private int deferredDatagrams;
     private boolean ackHeld;
+    private final Set<QuicPath> pathAcksHeld = new HashSet<>();
+    // Multipath paths other than path 0, whose state is in this class's fields.
+    private final Map<Long, QuicPath> paths = new ConcurrentHashMap<>();
+    private final java.util.Queue<Long> probeTimeouts = new java.util.concurrent.ConcurrentLinkedQueue<>();
+    private volatile boolean initialPathSuspect;
     private byte[] batchBuffer;
     private final MtuDiscovery mtuDiscovery;
+    private final VersionHolder version;
 
 
     public SenderImpl(VersionHolder version, int maxPacketSize, SocketManager socketManager, QuicConnectionImpl connection,
@@ -138,6 +153,7 @@ public class SenderImpl implements Sender, CongestionControlEventListener, Hands
     public SenderImpl(Clock clock, VersionHolder version, int maxPacketSize, SocketManager socketManager,
                       QuicConnectionImpl connection, String id, Integer initialRtt, Logger log) {
         this.clock = clock;
+        this.version = version;
         this.maxPacketSize = maxPacketSize;
         this.socketManager = socketManager;
         this.connection = connection;
@@ -241,6 +257,41 @@ public class SenderImpl implements Sender, CongestionControlEventListener, Hands
         }
     }
 
+    void sendAck(QuicPath path, int maxDelay) {
+        if (maxDelay == 0 && deferWakeUp) {
+            pathAcksHeld.add(path);
+            maxDelay = 20;
+        }
+        path.getRequestQueue().addAckRequest(maxDelay);
+    }
+
+    /**
+     * Adds a multipath path. Packets for it are assembled by the sender loop once it has frames to send; shared
+     * frames only when the path is active.
+     */
+    public QuicPath addPath(long id, InetSocketAddress peerAddress, ConnectionIdProvider connectionIds, QuicPath.State state) {
+        QuicPath path = new QuicPath(id, peerAddress, state, clock, version, connection.getRole(),
+                sendRequestQueue[EncryptionLevel.App.ordinal()], connectionIds, Integer.min(maxPacketSize, 1200), this, log);
+        paths.put(id, path);
+        return path;
+    }
+
+    public QuicPath getPath(long id) {
+        return paths.get(id);
+    }
+
+    public Collection<QuicPath> getPaths() {
+        return paths.values();
+    }
+
+    public void removePath(long id) {
+        QuicPath path = paths.remove(id);
+        if (path != null) {
+            path.setState(QuicPath.State.ABANDONED);
+            path.getRecoveryManager().abandon();
+        }
+    }
+
     @Override
     public void sendProbe(EncryptionLevel level) {
         synchronized (discardedSpaces) {
@@ -256,6 +307,9 @@ public class SenderImpl implements Sender, CongestionControlEventListener, Hands
 
     @Override
     public void sendProbe(List<QuicFrame> frames, EncryptionLevel level) {
+        if (level == EncryptionLevel.App) {
+            probeTimeout(0);
+        }
         synchronized (discardedSpaces) {
             if (! discardedSpaces[level.relatedPnSpace().ordinal()]) {
                 sendRequestQueue[level.ordinal()].addProbeRequest(frames);
@@ -276,6 +330,10 @@ public class SenderImpl implements Sender, CongestionControlEventListener, Hands
         if (ackHeld) {
             ackHeld = false;
             sendRequestQueue[EncryptionLevel.App.ordinal()].addAckRequest(0);
+        }
+        if (!pathAcksHeld.isEmpty()) {
+            pathAcksHeld.forEach(path -> path.getRequestQueue().addAckRequest(0));
+            pathAcksHeld.clear();
         }
         wakeUpSenderLoop();
     }
@@ -428,7 +486,70 @@ public class SenderImpl implements Sender, CongestionControlEventListener, Hands
         send(probe.get(), size);
     }
 
+    /**
+     * Notes a probe timeout on a path (0 for the initial path). With multipath, a path that times out while another
+     * works is suspected broken: what is in flight on it is retransmitted (on other paths), and it gets no new data
+     * until it is acknowledged again.
+     */
+    void probeTimeout(long pathId) {
+        if (!paths.isEmpty()) {
+            probeTimeouts.add(pathId);
+            wakeUpSenderLoop();
+        }
+    }
+
+    /**
+     * Notes that a path (0 for the initial path) got an acknowledgement, so it is not (or no longer) suspect.
+     */
+    public void pathAcknowledged(long pathId) {
+        if (pathId == 0) {
+            if (initialPathSuspect) {
+                initialPathSuspect = false;
+                sendRequestQueue[EncryptionLevel.App.ordinal()].setSharedEnabled(true);
+                wakeUpSenderLoop();
+            }
+        }
+        else {
+            QuicPath path = paths.get(pathId);
+            if (path != null && path.isSuspect()) {
+                path.setSuspect(false);
+                wakeUpSenderLoop();
+            }
+        }
+    }
+
+    private void handleProbeTimeouts() {
+        Long pathId;
+        while ((pathId = probeTimeouts.poll()) != null) {
+            long timedOut = pathId;
+            boolean otherPathWorks = (timedOut != 0 && !initialPathSuspect)
+                    || paths.values().stream().anyMatch(p -> p.getId() != timedOut && p.getState() == QuicPath.State.ACTIVE && !p.isSuspect());
+            if (!otherPathWorks) {
+                continue;
+            }
+            if (timedOut == 0) {
+                if (!initialPathSuspect) {
+                    log.info("Initial path suspected broken; retransmitting on other paths");
+                    initialPathSuspect = true;
+                    sendRequestQueue[EncryptionLevel.App.ordinal()].setSharedEnabled(false);
+                    recoveryManager.declareAllLost(PnSpace.App);
+                }
+            }
+            else {
+                QuicPath path = paths.get(timedOut);
+                if (path != null && !path.isSuspect()) {
+                    log.info("Path " + timedOut + " suspected broken; retransmitting on other paths");
+                    path.setSuspect(true);
+                    path.getRecoveryManager().declareAllLost(PnSpace.App);
+                }
+            }
+        }
+    }
+
     void sendIfAny() throws IOException {
+        if (!probeTimeouts.isEmpty()) {
+            handleProbeTimeouts();
+        }
         sendMtuProbeIfDue();
         if (socketManager.maxSegments() > 1) {
             sendBatched();
@@ -510,6 +631,12 @@ public class SenderImpl implements Sender, CongestionControlEventListener, Hands
      */
     long determineMaximumWaitTime() {
         Optional<Instant> nextDelayedSendTime = packetAssembler.nextDelayedSendTime();
+        for (QuicPath path : paths.values()) {
+            Instant pathTime = path.nextDelayedSendTime();
+            if (pathTime != null && (nextDelayedSendTime.isEmpty() || pathTime.isBefore(nextDelayedSendTime.get()))) {
+                nextDelayedSendTime = Optional.of(pathTime);
+            }
+        }
         if (nextDelayedSendTime.isPresent()) {
             long delay = max(Duration.between(clock.instant(), nextDelayedSendTime.get()).toMillis(), 0);
             if (delay > 0) {
@@ -613,7 +740,15 @@ public class SenderImpl implements Sender, CongestionControlEventListener, Hands
         long data = 0;
         for (SendItem item : itemsToSend) {
             QuicPacket packet = item.getPacket();
-            recoveryManager.packetSent(packet, timeSent, item.getPacketLostCallback());
+            if (packet.getPathId() != 0) {
+                QuicPath path = paths.get(packet.getPathId());
+                if (path != null) {
+                    path.getRecoveryManager().packetSent(packet, timeSent, item.getPacketLostCallback());
+                }
+            }
+            else {
+                recoveryManager.packetSent(packet, timeSent, item.getPacketLostCallback());
+            }
             idleTimer.packetSent(packet, timeSent);
             ackEliciting |= packet.isAckEliciting();
             data += countDataBytes(packet);
@@ -638,6 +773,52 @@ public class SenderImpl implements Sender, CongestionControlEventListener, Hands
     }
 
     private AssembledDatagram assemblePacket() {
+        if (paths.isEmpty()) {
+            return assembleInitialPath();
+        }
+        // Paths the peer prefers as backup come last, then lower RTT first; acks and probes of a path always go on it.
+        List<QuicPath> candidates = new ArrayList<>(paths.size() + 1);
+        candidates.add(null);
+        candidates.addAll(paths.values());
+        candidates.sort(Comparator.comparing((QuicPath p) -> p == null? initialPathSuspect: p.isSuspect())
+                .thenComparing((QuicPath p) -> p != null && p.peerPrefersBackup())
+                .thenComparingInt(p -> p == null? rttEstimater.getSmoothedRtt(): p.getRttEstimator().getSmoothedRtt()));
+        for (QuicPath path : candidates) {
+            if (path == null) {
+                AssembledDatagram datagram = assembleInitialPath();
+                if (!datagram.isEmpty()) {
+                    return datagram;
+                }
+            }
+            else {
+                Optional<SendItem> item = path.assemble();
+                if (item.isPresent()) {
+                    padForPathValidation(item.get());
+                    return new AssembledDatagram(new ArrayList<>(List.of(item.get())), 0);
+                }
+            }
+        }
+        return new AssembledDatagram(Collections.emptyList());
+    }
+
+    // https://www.rfc-editor.org/rfc/rfc9000.html#section-8.2.1: datagrams with PATH_CHALLENGE are expanded to 1200
+    // bytes, as are those with PATH_RESPONSE (section 8.2.2).
+    // A 1-RTT packet extends to the end of its datagram, so the padding goes inside the packet.
+    private static void padForPathValidation(SendItem item) {
+        QuicPacket packet = item.getPacket();
+        for (QuicFrame frame : packet.getFrames()) {
+            if (frame instanceof PathChallengeFrame || frame instanceof PathResponseFrame) {
+                int padding = 1200 - packet.estimateLength(0);
+                if (padding > 0) {
+                    padding -= packet.estimateLength(padding) - 1200;
+                    packet.addFrame(new Padding(padding));
+                }
+                return;
+            }
+        }
+    }
+
+    private AssembledDatagram assembleInitialPath() {
         int remainingCwnd = (int) congestionController.remainingCwnd();
         int currentMaxPacketSize = maxPacketSize;
         if (antiAmplificationLimit >= 0) {
@@ -698,7 +879,11 @@ public class SenderImpl implements Sender, CongestionControlEventListener, Hands
 
     @Override
     public int getPto() {
-        return rttEstimater.getSmoothedRtt() + 4 * rttEstimater.getRttVar() + receiverMaxAckDelay;
+        return getPto(rttEstimater);
+    }
+
+    int getPto(RttEstimator rtt) {
+        return rtt.getSmoothedRtt() + 4 * rtt.getRttVar() + receiverMaxAckDelay;
     }
 
     public CongestionController getCongestionController() {

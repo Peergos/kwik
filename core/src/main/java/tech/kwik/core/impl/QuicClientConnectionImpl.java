@@ -209,7 +209,8 @@ public class QuicClientConnectionImpl extends QuicConnectionImpl implements Quic
 
         this.sharedEndpoint = sharedEndpoint;
         if (sharedEndpoint != null) {
-            QueueReceiver queueReceiver = new QueueReceiver(log, packet ->
+            // With multipath, packets for other paths come from other addresses.
+            QueueReceiver queueReceiver = new QueueReceiver(log, packet -> isMultipathEnabled() ||
                     packet.getPeerAddress().getAddress().equals(serverAddress) && packet.getPeerAddress().getPort() == serverPort);
             receiver = queueReceiver;
             socketManager = new SharedEndpointSocketManager(sharedEndpoint, new InetSocketAddress(serverAddress, port));
@@ -757,7 +758,9 @@ public class QuicClientConnectionImpl extends QuicConnectionImpl implements Quic
 
     @Override
     public ProcessResult process(ShortHeaderPacket packet, PacketMetaData metaData) {
-        connectionIdManager.registerConnectionIdInUse(packet.getDestinationConnectionId());
+        if (packet.getPathId() == 0) {
+            connectionIdManager.registerConnectionIdInUse(packet.getDestinationConnectionId());
+        }
         processFrames(packet, metaData);
         return ProcessResult.Continue;
     }

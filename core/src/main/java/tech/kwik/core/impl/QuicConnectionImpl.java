@@ -30,6 +30,10 @@ import tech.kwik.core.crypto.ConnectionSecrets;
 import tech.kwik.core.crypto.CryptoStream;
 import tech.kwik.core.frame.*;
 import tech.kwik.core.log.Logger;
+import tech.kwik.core.common.PnSpace;
+import java.util.Optional;
+import tech.kwik.core.cid.ConnectionIdProvider;
+import tech.kwik.core.send.QuicPath;
 import tech.kwik.core.packet.PacketParser;
 import tech.kwik.core.path.PathManager;
 import tech.kwik.core.packet.BasePacketFilter;
@@ -73,6 +77,7 @@ public abstract class QuicConnectionImpl implements QuicConnection, PacketProces
     private volatile Long localMaxPathId;
     private volatile Long peerMaxPathId;
     private volatile PathManager pathManager;
+    private volatile Consumer<QuicPath> pathListener;
     private volatile Integer addressDiscoveryRole;
     private volatile Integer peerAddressDiscoveryRole;
     private volatile long nextObservedAddressSequenceNumber;
@@ -450,6 +455,129 @@ public abstract class QuicConnectionImpl implements QuicConnection, PacketProces
     }
 
     /**
+     * Opens a new multipath path to the given peer address, on the lowest path ID for which both sides issued
+     * connection IDs. The path carries data once validated (see {@link #setPathListener}).
+     * @return the new path, or empty when there is no usable path ID
+     */
+    public synchronized Optional<QuicPath> openPath(InetSocketAddress peerAddress) {
+        PathManager manager = pathManager;
+        if (manager == null) {
+            return Optional.empty();
+        }
+        for (long pathId = 1; pathId <= Long.min(localMaxPathId, peerMaxPathId); pathId++) {
+            if (getSender().getPath(pathId) == null && !manager.isAbandoned(pathId) && manager.hasConnectionIds(pathId)) {
+                QuicPath path = getSender().addPath(pathId, peerAddress, pathConnectionIds(pathId), QuicPath.State.VALIDATING);
+                challenge(path);
+                return Optional.of(path);
+            }
+        }
+        return Optional.empty();
+    }
+
+    /**
+     * Abandons a multipath path other than path 0: tells the peer with PATH_ABANDON and stops using the path; what
+     * was in flight on it is retransmitted on other paths.
+     */
+    public void abandonPath(long pathId, long errorCode) {
+        PathManager manager = pathManager;
+        if (manager == null || pathId == 0 || manager.isAbandoned(pathId)) {
+            return;
+        }
+        // Local connection IDs stay registered for three PTOs, so late packets on the path are not answered with
+        // stateless resets (section 3.4.2).
+        manager.abandon(pathId, scheduler, 3L * getSender().getPto());
+        send(new PathAbandonFrame(pathId, errorCode), this::retransmitPathAbandon);
+        getSender().removePath(pathId);
+        getSender().flush();
+    }
+
+    private void retransmitPathAbandon(QuicFrame frame) {
+        send(frame, this::retransmitPathAbandon);
+    }
+
+    /**
+     * Receives a notification whenever a multipath path becomes active.
+     */
+    public void setPathListener(Consumer<QuicPath> listener) {
+        pathListener = listener;
+    }
+
+    private void pathEvent(QuicPath path) {
+        Consumer<QuicPath> listener = pathListener;
+        if (listener != null) {
+            callbackThread.submit(() -> listener.accept(path));
+        }
+    }
+
+    private void challenge(QuicPath path) {
+        byte[] data = path.newChallenge();
+        path.sendOnPath(new PathChallengeFrame(quicVersion.getVersion(), data), lost -> {
+            if (path.getState() == QuicPath.State.VALIDATING && path.isCurrentChallenge(data)) {
+                challenge(path);
+            }
+        });
+        getSender().flush();
+    }
+
+    /**
+     * The path of a received packet for a path ID other than 0. A path the peer opened is added, and validated by
+     * this endpoint (https://www.ietf.org/archive/id/draft-ietf-quic-multipath-21.html#section-3.1).
+     */
+    private QuicPath receivedOnPath(QuicPacket packet, PacketMetaData metaData) {
+        QuicPath path = getSender().getPath(packet.getPathId());
+        if (path == null) {
+            PathManager manager = pathManager;
+            if (manager == null || manager.isAbandoned(packet.getPathId())) {
+                return null;
+            }
+            path = getSender().addPath(packet.getPathId(), metaData.sourceAddress(), pathConnectionIds(packet.getPathId()), QuicPath.State.VALIDATING);
+            log.info("Peer opened path " + path.getId() + " from " + metaData.sourceAddress());
+            challenge(path);
+        }
+        else if (!metaData.sourceAddress().equals(path.getPeerAddress())) {
+            // https://www.ietf.org/archive/id/draft-ietf-quic-multipath-21.html#section-3.1.2: migration of that path.
+            path.setPeerAddress(metaData.sourceAddress());
+            if (path.getState() != QuicPath.State.ABANDONED) {
+                path.setState(QuicPath.State.VALIDATING);
+                challenge(path);
+            }
+        }
+        return path;
+    }
+
+    private ConnectionIdProvider pathConnectionIds(long pathId) {
+        return new ConnectionIdProvider() {
+            @Override
+            public byte[] getInitialConnectionId() {
+                return getConnectionIdManager().getInitialConnectionId();
+            }
+
+            @Override
+            public byte[] getPeerConnectionId(InetSocketAddress clientAddress) {
+                return pathManager.peerConnectionId(pathId);
+            }
+
+            @Override
+            public void registerClientAddress(InetSocketAddress clientAddress) {
+            }
+
+            @Override
+            public boolean unusedPeerConnectionIdAvailable() {
+                return false;
+            }
+
+            @Override
+            public boolean peerUsesZeroLengthConnectionId() {
+                return false;
+            }
+
+            @Override
+            public void addressNoLongerInUse(InetSocketAddress previousAddress) {
+            }
+        };
+    }
+
+    /**
      * Resolves the paths of received 1-RTT packets once multipath is negotiated.
      */
     protected PacketParser.PathResolver pathResolver() {
@@ -480,7 +608,15 @@ public abstract class QuicConnectionImpl implements QuicConnection, PacketProces
 
     @Override
     public void process(PathAbandonFrame pathAbandonFrame, QuicPacket packet, PacketMetaData metaData) {
-        if (forInitialPath(pathAbandonFrame.getPathId())) {
+        long pathId = pathAbandonFrame.getPathId();
+        if (pathId > 0 && isMultipathEnabled() && pathId <= localMaxPathId) {
+            // https://www.ietf.org/archive/id/draft-ietf-quic-multipath-21.html#section-3.4
+            // "When an endpoint receives a PATH_ABANDON frame, it MUST send a corresponding PATH_ABANDON frame, if it
+            //  has not already done so"
+            abandonPath(pathId, NO_ERROR.value);
+            return;
+        }
+        if (forInitialPath(pathId)) {
             // https://www.ietf.org/archive/id/draft-ietf-quic-multipath-21.html#section-3.4
             // "If a PATH_ABANDON frame is received for the only open path of a QUIC connection, the receiving peer
             //  SHOULD send a CONNECTION_CLOSE frame and enter the closing state."
@@ -591,8 +727,20 @@ public abstract class QuicConnectionImpl implements QuicConnection, PacketProces
 
     @Override
     public void processPacket(QuicPacket packet, PacketMetaData metaData) {
+        QuicPath path = null;
+        if (packet.getPathId() != 0) {
+            path = receivedOnPath(packet, metaData);
+            if (path == null) {
+                return;
+            }
+        }
         ProcessResult result = packet.accept(this, metaData);
         if (result == ProcessResult.Abort) {
+            return;
+        }
+        if (path != null) {
+            path.getAckGenerator().packetReceived(packet);
+            idleTimer.packetProcessed();
             return;
         }
 
@@ -610,9 +758,19 @@ public abstract class QuicConnectionImpl implements QuicConnection, PacketProces
     @Override
     public void process(AckFrame ackFrame, QuicPacket packet, PacketMetaData metaData) {
         if (!forInitialPath(ackFrame.getPathId())) {
+            QuicPath path = isMultipathEnabled()? getSender().getPath(ackFrame.getPathId()): null;
+            if (path != null) {
+                ackFrame.setDelayExponent(peerAckDelayExponent);
+                getSender().pathAcknowledged(path.getId());
+                path.getAckGenerator().process(ackFrame);
+                path.getRecoveryManager().received(ackFrame, PnSpace.App, metaData.timeReceived());
+            }
             return;
         }
         ackFrame.setDelayExponent(peerAckDelayExponent);
+        if (packet.getPnSpace() == PnSpace.App) {
+            getSender().pathAcknowledged(0);
+        }
         getAckGenerator().received(ackFrame, packet.getPnSpace(), metaData.timeReceived());
         recoveryManager.received(ackFrame, packet.getPnSpace(), metaData.timeReceived());
     }
@@ -703,6 +861,17 @@ public abstract class QuicConnectionImpl implements QuicConnection, PacketProces
     @Override
     public void process(PathChallengeFrame pathChallengeFrame, QuicPacket packet, PacketMetaData metaData) {
         PathResponseFrame response = new PathResponseFrame(quicVersion.getVersion(), pathChallengeFrame.getData());
+        if (packet.getPathId() != 0) {
+            // https://www.ietf.org/archive/id/draft-ietf-quic-multipath-21.html#section-3.1
+            // "If an endpoint sends a PATH_RESPONSE (...), it MUST be sent on the same path as used by the packet that
+            //  contained the PATH_CHALLENGE frame"
+            QuicPath path = getSender().getPath(packet.getPathId());
+            if (path != null) {
+                path.sendOnPath(response, f -> {});
+                getSender().flush();
+            }
+            return;
+        }
         // https://www.rfc-editor.org/rfc/rfc9000.html#name-retransmission-of-informati
         // "Responses to path validation using PATH_RESPONSE frames are sent just once."
         send(response, f -> {});
@@ -710,6 +879,13 @@ public abstract class QuicConnectionImpl implements QuicConnection, PacketProces
 
     @Override
     public void process(PathResponseFrame pathResponseFrame, QuicPacket packet, PacketMetaData metaData) {
+        QuicPath path = getSender().getPath(packet.getPathId());
+        if (path != null && path.getState() == QuicPath.State.VALIDATING && path.challengeAnswered(pathResponseFrame.getData())) {
+            path.setState(QuicPath.State.ACTIVE);
+            log.info("Path " + path.getId() + " to " + path.getPeerAddress() + " validated");
+            pathEvent(path);
+            getSender().flush();
+        }
     }
 
     @Override

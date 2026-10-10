@@ -592,6 +592,19 @@ public class RecoveryManager implements FrameReceivedListener<AckFrame>, Handsha
         }
     }
 
+    /**
+     * Stops recovery for an abandoned multipath path, retransmitting what was in flight on it.
+     */
+    public void declareAllLost(PnSpace pnSpace) {
+        lossDetectors[pnSpace.ordinal()].declareAllLost();
+        setLossDetectionTimer();
+    }
+
+    public void abandon() {
+        lossDetectors[PnSpace.App.ordinal()].declareAllLost();
+        stopRecovery();
+    }
+
     public void reset(PnSpace pnSpace) {
         if (!hasBeenStopped) {
             lossDetectors[pnSpace.ordinal()].reset();

@@ -22,6 +22,8 @@ import tech.kwik.core.common.PnSpace;
 import tech.kwik.core.impl.TransportError;
 
 import java.util.Arrays;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.Map;
 
 /**
  * https://www.rfc-editor.org/rfc/rfc9000.html#name-packet-numbers
@@ -41,6 +43,9 @@ public class DropDuplicatePacketsFilter extends BasePacketFilter {
     final static int DEFAULT_WINDOW_SIZE_APP = 1024;
 
     private final WindowBasedProcessedPacketChecker[] packetNumberSpace;
+    private final int appWindowSize;
+    // The packet number spaces of multipath paths other than path 0.
+    private final Map<Long, WindowBasedProcessedPacketChecker> pathPacketNumberSpaces = new ConcurrentHashMap<>();
 
     public DropDuplicatePacketsFilter(PacketFilter next) {
         this(next, DEFAULT_WINDOW_SIZE_INITIAL, DEFAULT_WINDOW_SIZE_HANDSHAKE, DEFAULT_WINDOW_SIZE_APP);
@@ -50,6 +55,7 @@ public class DropDuplicatePacketsFilter extends BasePacketFilter {
         super(next);
         assert windowSizes.length == PnSpace.values().length;
 
+        appWindowSize = windowSizes[PnSpace.App.ordinal()];
         packetNumberSpace = new WindowBasedProcessedPacketChecker[PnSpace.values().length];
         for (PnSpace space: PnSpace.values()) {
             packetNumberSpace[space.ordinal()] = new WindowBasedProcessedPacketChecker(windowSizes[space.ordinal()]);
@@ -58,12 +64,19 @@ public class DropDuplicatePacketsFilter extends BasePacketFilter {
 
     @Override
     public void processPacket(QuicPacket packet, PacketMetaData metaData) throws TransportError {
-        if (packet.getPnSpace() == null || packetNumberSpace[packet.getPnSpace().ordinal()].checkPacketNumber(packet)) {
+        if (packet.getPnSpace() == null || checker(packet).checkPacketNumber(packet)) {
             next(packet, metaData);
         }
         else {
             discard(packet, "duplicate packet");
         }
+    }
+
+    private WindowBasedProcessedPacketChecker checker(QuicPacket packet) {
+        if (packet.getPathId() != 0) {
+            return pathPacketNumberSpaces.computeIfAbsent(packet.getPathId(), id -> new WindowBasedProcessedPacketChecker(appWindowSize));
+        }
+        return packetNumberSpace[packet.getPnSpace().ordinal()];
     }
 
     private class WindowBasedProcessedPacketChecker {

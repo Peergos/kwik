@@ -41,6 +41,10 @@ public class SendRequestQueue {
     private Deque<SendRequest> requestQueue = new ConcurrentLinkedDeque<>();
     private Deque<List<QuicFrame>> probeQueue = new ConcurrentLinkedDeque<>();
     private Deque<SendRequest> altAddressRequestQueue = new ConcurrentLinkedDeque<>();
+    // Requests that must be sent on this queue's multipath path; null for queues that are not a path's.
+    private final Deque<SendRequest> ownQueue;
+    // For a path's queue: whether it takes frames from the shared queue (not while the path is being validated).
+    private volatile boolean sharedEnabled = true;
     private final Object ackLock = new Object();
     private volatile Instant nextAckTime;
     private volatile boolean cleared;
@@ -52,6 +56,33 @@ public class SendRequestQueue {
     public SendRequestQueue(Clock clock, EncryptionLevel level) {
         this.clock = clock;
         encryptionLevel = level;
+        ownQueue = null;
+    }
+
+    /**
+     * A queue for a multipath path: frame requests are shared with the given queue, so they can be sent on any path,
+     * while acks and probes are the path's own.
+     */
+    public static SendRequestQueue forPath(Clock clock, SendRequestQueue shared) {
+        return new SendRequestQueue(clock, shared, true);
+    }
+
+    private SendRequestQueue(Clock clock, SendRequestQueue shared, boolean path) {
+        this.clock = clock;
+        encryptionLevel = shared.encryptionLevel;
+        requestQueue = shared.requestQueue;
+        ownQueue = new ConcurrentLinkedDeque<>();
+    }
+
+    /**
+     * Queues a frame for this path only; only for a path's queue (see the constructor taking a shared queue).
+     */
+    public void setSharedEnabled(boolean enabled) {
+        sharedEnabled = enabled;
+    }
+
+    public void addPriorityRequestOwn(QuicFrame fixedFrame, Consumer<QuicFrame> lostCallback) {
+        ownQueue.addLast(new FixedFrameSendRequest(fixedFrame, lostCallback));
     }
 
     public void addRequest(QuicFrame fixedFrame, Consumer<QuicFrame> lostCallback) {
@@ -182,15 +213,22 @@ public class SendRequestQueue {
      * Whether there is nothing at all to send: no requests, probes, alternate address requests or pending ack.
      */
     public boolean isIdle() {
-        return nextAckTime == null && requestQueue.isEmpty() && probeQueue.isEmpty() && altAddressRequestQueue.isEmpty();
+        return nextAckTime == null && (!sharedEnabled || requestQueue.isEmpty()) && probeQueue.isEmpty()
+                && altAddressRequestQueue.isEmpty() && (ownQueue == null || ownQueue.isEmpty());
     }
 
     public boolean hasRequests() {
-        return !requestQueue.isEmpty();
+        return (sharedEnabled && !requestQueue.isEmpty()) || (ownQueue != null && !ownQueue.isEmpty());
     }
 
     public Optional<SendRequest> next(int maxFrameLength) {
-        return next(requestQueue, maxFrameLength);
+        if (ownQueue != null && !ownQueue.isEmpty()) {
+            Optional<SendRequest> own = next(ownQueue, maxFrameLength);
+            if (own.isPresent()) {
+                return own;
+            }
+        }
+        return sharedEnabled? next(requestQueue, maxFrameLength): Optional.empty();
     }
 
     private Optional<SendRequest> next(Deque<SendRequest> queue, int maxFrameLength) {

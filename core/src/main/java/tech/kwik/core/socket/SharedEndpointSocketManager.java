@@ -38,7 +38,13 @@ public class SharedEndpointSocketManager implements SocketManager {
 
     @Override
     public Instant send(ByteBuffer data, InetSocketAddress clientAddress) throws IOException {
-        return endpoint.send(data, serverAddress);
+        return endpoint.send(data, destination(clientAddress));
+    }
+
+    // Packets for the initial path carry the client (local) address; those for other multipath paths carry the
+    // peer address of their path.
+    private InetSocketAddress destination(InetSocketAddress address) {
+        return address == null || address.equals(endpoint.getLocalAddress())? serverAddress: address;
     }
 
     @Override
@@ -51,7 +57,7 @@ public class SharedEndpointSocketManager implements SocketManager {
         if (endpoint.maxSegments() <= 1) {
             return SocketManager.super.sendSegmented(data, length, segmentSize, clientAddress);
         }
-        return endpoint.sendSegmented(data, length, segmentSize, serverAddress);
+        return endpoint.sendSegmented(data, length, segmentSize, destination(clientAddress));
     }
 
     @Override

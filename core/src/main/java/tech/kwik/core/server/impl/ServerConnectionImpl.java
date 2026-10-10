@@ -549,7 +549,9 @@ public class ServerConnectionImpl extends QuicConnectionImpl implements ServerCo
 
     @Override
     public ProcessResult process(ShortHeaderPacket packet, PacketMetaData metaData) {
-        connectionIdManager.registerConnectionIdInUse(packet.getDestinationConnectionId());
+        if (packet.getPathId() == 0) {
+            connectionIdManager.registerConnectionIdInUse(packet.getDestinationConnectionId());
+        }
         if (connectionMigrationEnabled) {
             pathValidator.checkSourceAddress(packet, metaData);
         }
@@ -627,7 +629,10 @@ public class ServerConnectionImpl extends QuicConnectionImpl implements ServerCo
 
     @Override
     public void process(PathResponseFrame pathResponseFrame, QuicPacket packet, PacketMetaData metaData) {
-        if (connectionMigrationEnabled) {
+        if (packet.getPathId() != 0) {
+            super.process(pathResponseFrame, packet, metaData);
+        }
+        else if (connectionMigrationEnabled) {
             pathValidator.checkPathResponse(pathResponseFrame, metaData);
         }
     }
