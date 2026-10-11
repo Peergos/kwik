@@ -238,6 +238,17 @@ public class StreamManager {
         }
     }
 
+    public String debugState() {
+        FlowControl fc = flowController;
+        StringBuilder state = new StringBuilder(fc == null? "none": fc.debugState());
+        streams.forEach((id, stream) -> {
+            if (stream.getOutputStream() instanceof StreamOutputStreamImpl) {
+                state.append(" [stream ").append(id).append(": ").append(((StreamOutputStreamImpl) stream.getOutputStream()).debugState()).append("]");
+            }
+        });
+        return state.toString();
+    }
+
     public void setFlowController(FlowControl flowController) {
         this.flowController = flowController;
     }

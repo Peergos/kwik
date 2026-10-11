@@ -155,6 +155,10 @@ public class FlowControl {
      * Returns the current connection flow control limit.
      * @return  current connection flow control limit
      */
+    public synchronized String debugState() {
+        return "maxDataAllowed=" + maxDataAllowed + " maxDataAssigned=" + maxDataAssigned;
+    }
+
     public long getConnectionDataLimit() {
         return maxDataAllowed;
     }

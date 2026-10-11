@@ -126,11 +126,10 @@ class StreamOutputStreamImpl extends StreamOutputStream implements FlowControlUp
     }
 
     private void scheduleSendStreamFrameRequest(boolean flush) {
-        int queued = sendRequestsQueued.get();
-        if (queued == 0) {
-            // This is a race condition, but not a problem when one superfluous send request is queued.
+        // Counted before queueing: when counted after, the sender could run the request first (count -1), and a request
+        // it then queues itself for the remaining data would be skipped, stranding that data with nothing in flight.
+        if (sendRequestsQueued.compareAndSet(0, 1)) {
             quicStream.connection.send(this::sendStreamFrame, MIN_FRAME_SIZE, getEncryptionLevel(), this::retransmitStreamFrame, flush);
-            sendRequestsQueued.incrementAndGet();
         }
     }
 
@@ -263,6 +262,12 @@ class StreamOutputStreamImpl extends StreamOutputStream implements FlowControlUp
         // Stream might have been blocked (or it might have filled the flow control window exactly), queue send request
         // and let sendFrame method determine whether there is more to send or not.
         scheduleSendStreamFrameRequest(false);  // No need to flush, as this is called while processing received message
+    }
+
+    public String debugState() {
+        return "buffered=" + sendBuffer.getAvailableBytes() + " queuedRequests=" + sendRequestsQueued.get()
+                + " offset=" + currentOffset + " blockedOffset=" + blockedOffset + " closed=" + closed
+                + " limit=" + flowController.getFlowControlLimit(quicStream) + " block=" + flowController.getFlowControlBlockReason(quicStream);
     }
 
     void interruptBlockingThread() {

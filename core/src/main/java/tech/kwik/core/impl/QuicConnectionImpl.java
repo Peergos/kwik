@@ -554,6 +554,10 @@ public abstract class QuicConnectionImpl implements QuicConnection, PacketProces
         send(frame, this::retransmitPathAbandon);
     }
 
+    public String debugState() {
+        return getSender().debugState() + " flowControl=" + getStreamManager().debugState();
+    }
+
     /**
      * The multipath paths other than path 0.
      */
@@ -1065,6 +1069,7 @@ public abstract class QuicConnectionImpl implements QuicConnection, PacketProces
         if (connectionState.closingOrDraining()) {
             return;
         }
+        log.error("Idle timeout after " + idleTime + " ms; closing the connection");
         connectionState = Status.Closing;
 
         emit(new ConnectionTerminatedEvent(this, idleTimer.isTailLoss()? ConnectionLost: CloseReason.IdleTimeout, false));
@@ -1128,6 +1133,10 @@ public abstract class QuicConnectionImpl implements QuicConnection, PacketProces
             return;
         }
         connectionState = Status.CloseRequested;
+        if (error != NO_ERROR.value || errorType == APPLICATION_ERROR) {
+            log.error("Closing connection with " + (errorType == APPLICATION_ERROR? "application ": "") + "error " + error
+                    + (errorReason != null? ": " + errorReason: ""));
+        }
 
         emit(new ConnectionTerminatedEvent(this, CloseReason.ImmediateClose, false,
                 errorType == QUIC_LAYER_ERROR? error: null,
@@ -1227,6 +1236,7 @@ public abstract class QuicConnectionImpl implements QuicConnection, PacketProces
                     closing.hasApplicationProtocolError()? closing.getErrorCode(): null, closing.getReasonPhrase()));
 
             if (closing.hasError()) {
+                log.error("Peer closed the connection: " + closing);
                 peerClosedWithError(closing);
             }
             getSender().stop();

@@ -48,6 +48,10 @@ public class QuicStreamImpl implements QuicStream {
     private final ReentrantLock stateLock;
 
 
+    public QuicConnectionImpl getConnectionImpl() {
+        return connection;
+    }
+
     public QuicStreamImpl(int streamId, Role role, QuicConnectionImpl connection, StreamManager streamManager, FlowControl flowController) {
         this(Version.getDefault(), streamId, role, connection, streamManager, flowController, new NullLogger());
     }

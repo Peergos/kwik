@@ -39,6 +39,7 @@ import java.util.function.Consumer;
 public class ServerConnectionThread implements ServerConnectionProxy {
 
     private final ServerConnectionImpl serverConnection;
+    private static final boolean NO_SPLIT = Boolean.getBoolean("kwik.nosplit");
     private final BlockingQueue<ReceivedDatagram> queue;
     // Datagrams whose 1-RTT packet the receiver thread has decrypted, for the processor thread.
     private final BlockingQueue<ReceivedDatagram> parsed;
@@ -79,7 +80,8 @@ public class ServerConnectionThread implements ServerConnectionProxy {
 
     @Override
     public void parsePackets(int datagramNumber, Instant timeReceived, ByteBuffer data, InetSocketAddress sourceAddress, boolean more) {
-        queue.add(new ReceivedDatagram(datagramNumber, timeReceived, data, sourceAddress, more));
+        ReceivedDatagram d = new ReceivedDatagram(datagramNumber, timeReceived, data, sourceAddress, more);
+        if (NO_SPLIT) { parsed.add(d); } else { queue.add(d); }
     }
 
     @Override

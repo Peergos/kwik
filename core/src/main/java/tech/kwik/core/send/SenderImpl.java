@@ -959,6 +959,18 @@ public class SenderImpl implements Sender, CongestionControlEventListener, Hands
                 rttEstimater.getSmoothedRtt(), rttEstimater.getRttVar(), rttEstimater.getLatestRtt());
     }
 
+    /**
+     * Sender state, for diagnosing stalls.
+     */
+    public String debugState() {
+        return "cwnd=" + congestionController.getWindowSize() + " inFlight=" + congestionController.getBytesInFlight()
+                + " appQueueEmpty=" + sendRequestQueue[EncryptionLevel.App.ordinal()].isEmpty(true)
+                + " appIdle=" + sendRequestQueue[EncryptionLevel.App.ordinal()].isIdle()
+                + " ackElicitingInFlight=" + recoveryManager.waitingForAcknowledgement()
+                + " deferWakeUp=" + deferWakeUp + " ackHeld=" + ackHeld + " paths=" + paths.size()
+                + " suspect=" + initialPathSuspect + " maxPacketSize=" + maxPacketSize;
+    }
+
     @Override
     public int getPto() {
         return getPto(rttEstimater);
