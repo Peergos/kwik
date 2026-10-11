@@ -39,12 +39,8 @@ import java.util.function.Consumer;
 public class ServerConnectionThread implements ServerConnectionProxy {
 
     private final ServerConnectionImpl serverConnection;
-    private static final boolean NO_SPLIT = Boolean.getBoolean("kwik.nosplit");
     private final BlockingQueue<ReceivedDatagram> queue;
-    // Datagrams whose 1-RTT packet the receiver thread has decrypted, for the processor thread.
-    private final BlockingQueue<ReceivedDatagram> parsed;
     private final Thread connectionReceiverThread;
-    private final Thread processorThread;
     private final List<InitialPacket> firstInitialPackets;
     private final ByteBuffer data;
     private final PacketMetaData firstInitialPacketMetaData;
@@ -59,12 +55,8 @@ public class ServerConnectionThread implements ServerConnectionProxy {
         this.log = log;
 
         queue = new LinkedBlockingQueue<>();
-        parsed = new LinkedBlockingQueue<>();
-        String id = Bytes.bytesToHex(serverConnection.getOriginalDestinationConnectionId());
-        PacketParser parser = serverConnection.createParser();
-        connectionReceiverThread = new Thread(() -> preParse(parser), "receiver-" + id);
-        processorThread = new Thread(() -> process(parser), "processor-" + id);
-        processorThread.start();
+        String threadId = "receiver-" + Bytes.bytesToHex(serverConnection.getOriginalDestinationConnectionId());
+        connectionReceiverThread = new Thread(this::process, threadId);
         connectionReceiverThread.start();
     }
 
@@ -80,8 +72,7 @@ public class ServerConnectionThread implements ServerConnectionProxy {
 
     @Override
     public void parsePackets(int datagramNumber, Instant timeReceived, ByteBuffer data, InetSocketAddress sourceAddress, boolean more) {
-        ReceivedDatagram d = new ReceivedDatagram(datagramNumber, timeReceived, data, sourceAddress, more);
-        if (NO_SPLIT) { parsed.add(d); } else { queue.add(d); }
+        queue.add(new ReceivedDatagram(datagramNumber, timeReceived, data, sourceAddress, more));
     }
 
     @Override
@@ -97,24 +88,11 @@ public class ServerConnectionThread implements ServerConnectionProxy {
     @Override
     public void dispose() {
         connectionReceiverThread.interrupt();
-        processorThread.interrupt();
     }
 
-    private void preParse(PacketParser parser) {
+    private void process() {
         try {
-            while (!connectionReceiverThread.isInterrupted()) {
-                ReceivedDatagram datagram = queue.take();
-                datagram.preParsed = parser.preParse(datagram.data);
-                parsed.add(datagram);
-            }
-        }
-        catch (InterruptedException e) {
-            // Terminate, see dispose()
-        }
-    }
-
-    private void process(PacketParser parser) {
-        try {
+            PacketParser parser = serverConnection.createParser();
             for (InitialPacket firstInitialPacket : firstInitialPackets) {
                 serverConnection.getPacketProcessorChain().processPacket(firstInitialPacket, firstInitialPacketMetaData);
             }
@@ -129,22 +107,16 @@ public class ServerConnectionThread implements ServerConnectionProxy {
                 datagramProcessingChain.processDatagram(data.slice(), firstInitialPacketMetaData);
             }
 
-            while (! processorThread.isInterrupted()) {
-                ReceivedDatagram datagram = parsed.poll();
+            while (! connectionReceiverThread.isInterrupted()) {
+                ReceivedDatagram datagram = queue.poll();
                 if (datagram == null) {
                     // The 'more' hint comes from the shared socket, so the next datagram may have gone to another connection.
                     serverConnection.endReceiveBatch();
-                    datagram = parsed.take();
+                    datagram = queue.take();
                 }
                 PacketMetaData metaData = new PacketMetaData(datagram.timeReceived, datagram.sourceAddress, datagram.datagramNumber, datagram.size);
-                serverConnection.getSender().moreDatagramsQueued(datagram.more || !parsed.isEmpty() || !queue.isEmpty());
-                parser.setPreParsed(datagram.preParsed);
-                try {
-                    datagramProcessingChain.processDatagram(datagram.data, metaData);
-                }
-                finally {
-                    parser.setPreParsed(null);
-                }
+                serverConnection.getSender().moreDatagramsQueued(datagram.more || !queue.isEmpty());
+                datagramProcessingChain.processDatagram(datagram.data, metaData);
             }
         }
         catch (TransportError error) {
@@ -164,9 +136,6 @@ public class ServerConnectionThread implements ServerConnectionProxy {
         catch (Throwable error) {
             // Of course, this should never happen. But if it does, there is no point in going on with this connection.
             serverConnection.abortConnection(error);
-        }
-        finally {
-            connectionReceiverThread.interrupt();
         }
     }
 
@@ -194,7 +163,6 @@ public class ServerConnectionThread implements ServerConnectionProxy {
         final InetSocketAddress sourceAddress;
         final int size;
         final boolean more;
-        Object preParsed;
 
         public ReceivedDatagram(int datagramNumber, Instant timeReceived, ByteBuffer data, InetSocketAddress sourceAddress, boolean more) {
             this.more = more;

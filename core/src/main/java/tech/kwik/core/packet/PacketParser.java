@@ -40,7 +40,6 @@ public abstract class PacketParser {
     private final Role role;
     protected long[] largestPacketNumber;
     private BiFunction<ByteBuffer, Exception, Boolean> handleUnprotectPacketFailureFunction;
-    private Object preParsed;
     private volatile PathResolver pathResolver;
     // Largest received packet number of each path other than path 0, whose largest is in largestPacketNumber.
     private final Map<Long, long[]> largestPacketNumberByPath = new ConcurrentHashMap<>();
@@ -80,65 +79,10 @@ public abstract class PacketParser {
         largestPacketNumber = new long[PnSpace.values().length];
     }
 
-    /**
-     * Parses (and decrypts) a datagram holding a 1-RTT packet ahead of processing it, possibly on another thread.
-     * @return the packet, the exception parsing it threw, or null when it is not a 1-RTT packet or its keys are not
-     * yet available
-     */
-    public Object preParse(ByteBuffer data) {
-        if (data.remaining() < 2 || (data.get(data.position()) & 0xc0) != 0x40) {
-            return null;
-        }
-        try {
-            return parsePacket(data.duplicate());
-        }
-        catch (MissingKeysException e) {
-            return null;
-        }
-        catch (DecryptionException | InvalidPacketException | TransportError e) {
-            return e;
-        }
-    }
-
-    /**
-     * Sets the result of preParse for the datagram the next call of parseAndProcessPackets gets, or null.
-     */
-    public void setPreParsed(Object preParsed) {
-        this.preParsed = preParsed;
-    }
-
-    private QuicPacket takePreParsed(ByteBuffer data) throws DecryptionException, InvalidPacketException, TransportError, MissingKeysException {
-        Object result = preParsed;
-        preParsed = null;
-        if (result == null) {
-            return parsePacket(data);
-        }
-        if (result instanceof DecryptionException) {
-            throw (DecryptionException) result;
-        }
-        if (result instanceof InvalidPacketException) {
-            throw (InvalidPacketException) result;
-        }
-        if (result instanceof TransportError) {
-            throw (TransportError) result;
-        }
-        // A 1-RTT packet extends to the end of the datagram.
-        data.position(data.limit());
-        return (QuicPacket) result;
-    }
-
     public void parseAndProcessPackets(ByteBuffer data, PacketMetaData metaData) throws TransportError {
-        boolean first = true;
         while (data.remaining() > 0) {
             try {
-                QuicPacket packet;
-                if (first) {
-                    first = false;
-                    packet = takePreParsed(data);
-                }
-                else {
-                    packet = parsePacket(data);
-                }
+                QuicPacket packet = parsePacket(data);
                 log.received(metaData.timeReceived(), metaData.datagramNumber(), packet);
                 if (log.logDebug()) {
                     log.debug("Parsed packet with size " + data.position() + "; " + data.remaining() + " bytes left.");
@@ -223,10 +167,7 @@ public abstract class PacketParser {
                     largestPN = largestPacketNumberByPath.computeIfAbsent(pathId, id -> new long[1])[0];
                 }
             }
-            // Cipher objects and key update state are not thread safe; see preParse.
-            synchronized (aead) {
-                packet.parse(data, aead, largestPN, log, cidLength);
-            }
+            packet.parse(data, aead, largestPN, log, cidLength);
         }
         else {
             // Packet has no encryption level, i.e. a VersionNegotiationPacket
