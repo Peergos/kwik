@@ -34,6 +34,7 @@ public class SendItem {
     private final QuicPacket packet;
     private final Consumer<QuicPacket> packetLostCallback;
     private final InetSocketAddress clientAddress;
+    private boolean offPath;
 
     public SendItem(QuicPacket packet, Consumer<QuicPacket> packetLostCallback, InetSocketAddress clientAddress) {
         this.packet = Objects.requireNonNull(packet);
@@ -58,6 +59,18 @@ public class SendItem {
     @Override
     public String toString() {
         return packet.toString();
+    }
+
+    /**
+     * Sent to another address than the path's: not subject to loss recovery or congestion control.
+     */
+    public boolean isOffPath() {
+        return offPath;
+    }
+
+    SendItem offPath() {
+        offPath = true;
+        return this;
     }
 
     public InetSocketAddress getClientAddress() {

@@ -232,6 +232,12 @@ public interface QuicClientConnection extends QuicConnection {
         Builder multipath(long maxPathId);
 
         /**
+         * Offers iroh's QUIC NAT traversal (which needs multipath), accepting up to the given number of the server's
+         * addresses (1..255).
+         */
+        Builder natTraversal(int maxRemoteAddresses);
+
+        /**
          * Sets the key manager that will be used to authenticate the client to the server. The key manager should
          * contain the client's private key(s) and certificate(s) it wants to use for authentication.
          * The first certificate whose issuer corresponds to one of the authorities indicated by the server is used.

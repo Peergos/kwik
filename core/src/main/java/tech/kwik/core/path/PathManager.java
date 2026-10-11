@@ -19,6 +19,7 @@
 package tech.kwik.core.path;
 
 import tech.kwik.core.cid.ConnectionIdManager;
+import tech.kwik.core.frame.MaxPathIdFrame;
 import tech.kwik.core.frame.NewConnectionIdFrame;
 import tech.kwik.core.frame.QuicFrame;
 import tech.kwik.core.frame.RetireConnectionIdFrame;
@@ -47,7 +48,7 @@ public class PathManager {
     private final ConnectionIdManager connectionIdManager;
     private final Sender sender;
     private final BiConsumer<Integer, String> closeWithError;
-    private final long localMaxPathId;
+    private volatile long localMaxPathId;
     private volatile long peerMaxPathId;
     private final Map<Long, PathConnectionIds> paths = new ConcurrentHashMap<>();
     private final Map<ByteBuffer, Long> pathIdByConnectionId = new ConcurrentHashMap<>();
@@ -259,6 +260,7 @@ public class PathManager {
             path.abandoned = true;
             path.peer.clear();
         }
+        raiseLocalMaxPathId();
         Runnable release = () -> {
             synchronized (path) {
                 new java.util.ArrayList<>(path.local.keySet()).forEach(sequenceNr -> release(path, sequenceNr));
@@ -270,6 +272,29 @@ public class PathManager {
         else {
             release.run();
         }
+    }
+
+    // As noq does: each abandoned path lets the peer open another, so path IDs are not exhausted when paths come and go.
+    private void raiseLocalMaxPathId() {
+        long maxPathId;
+        synchronized (this) {
+            if (localMaxPathId >= 0xffffffffL) {
+                return;
+            }
+            maxPathId = ++localMaxPathId;
+            if (issuing) {
+                issueConnectionIds();
+            }
+        }
+        sendMaxPathId(maxPathId);
+    }
+
+    private void sendMaxPathId(long maxPathId) {
+        sender.send(new MaxPathIdFrame(maxPathId), App, lost -> {
+            if (localMaxPathId == maxPathId) {
+                sendMaxPathId(maxPathId);
+            }
+        });
     }
 
     public long getLocalMaxPathId() {

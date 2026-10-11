@@ -69,4 +69,13 @@ public interface FrameProcessor {
 
     default void process(ObservedAddressFrame observedAddressFrame, QuicPacket packet, PacketMetaData metaData) {
     }
+
+    default void process(AddAddressFrame addAddressFrame, QuicPacket packet, PacketMetaData metaData) {
+    }
+
+    default void process(ReachOutFrame reachOutFrame, QuicPacket packet, PacketMetaData metaData) {
+    }
+
+    default void process(RemoveAddressFrame removeAddressFrame, QuicPacket packet, PacketMetaData metaData) {
+    }
 }

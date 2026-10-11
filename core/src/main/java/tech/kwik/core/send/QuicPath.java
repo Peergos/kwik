@@ -138,6 +138,12 @@ public class QuicPath {
         peerPrefersBackup = backup;
     }
 
+    public static byte[] randomChallengeData() {
+        byte[] data = new byte[8];
+        RANDOM.nextBytes(data);
+        return data;
+    }
+
     public byte[] newChallenge() {
         byte[] data = new byte[8];
         RANDOM.nextBytes(data);
@@ -186,6 +192,13 @@ public class QuicPath {
      */
     public void sendOnPath(QuicFrame frame, Consumer<QuicFrame> lostCallback) {
         requestQueue.addPriorityRequestOwn(frame, lostCallback);
+    }
+
+    /**
+     * Sends the frames to another address than the path's, see {@link SendRequestQueue#addOffPathRequest}.
+     */
+    public void sendOffPath(java.util.List<QuicFrame> frames, InetSocketAddress destination) {
+        requestQueue.addOffPathRequest(frames, destination);
     }
 
     Optional<SendItem> assemble() {

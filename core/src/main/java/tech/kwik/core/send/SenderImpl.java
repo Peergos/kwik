@@ -235,6 +235,14 @@ public class SenderImpl implements Sender, CongestionControlEventListener, Hands
         wakeUpSenderLoop();
     }
 
+    /**
+     * Sends the frames on path 0 to another address, see {@link SendRequestQueue#addOffPathRequest}.
+     */
+    public void sendOffPath(List<QuicFrame> frames, InetSocketAddress destination) {
+        sendRequestQueue[EncryptionLevel.App.ordinal()].addOffPathRequest(frames, destination);
+        wakeUpSenderLoop();
+    }
+
     @Override
     public void setInitialToken(byte[] token) {
         if (token != null) {
@@ -622,6 +630,10 @@ public class SenderImpl implements Sender, CongestionControlEventListener, Hands
                 break;
             }
             InetSocketAddress address = assembled.getItems().get(0).getClientAddress();
+            if (assembled.getItems().get(0).isOffPath()) {
+                send(assembled);
+                continue;
+            }
             if (segments > 0 && (!address.equals(destination) || buffer.remaining() < maxPacketSize)) {
                 sendSegmented(buffer.position(), segmentSize, destination, batchPathId);
                 buffer.clear();
@@ -739,6 +751,10 @@ public class SenderImpl implements Sender, CongestionControlEventListener, Hands
             timeSent = socketManager.send(buffer, assembledDatagram.getItems().get(0).getClientAddress());
         }
         catch (IOException e) {
+            if (assembledDatagram.getItems().get(0).isOffPath()) {
+                log.info("Sending off-path to " + assembledDatagram.getItems().get(0).getClientAddress() + " failed: " + e);
+                return;
+            }
             if (pathId == 0) {
                 throw e;
             }
@@ -808,6 +824,9 @@ public class SenderImpl implements Sender, CongestionControlEventListener, Hands
         long data = 0;
         for (SendItem item : itemsToSend) {
             QuicPacket packet = item.getPacket();
+            if (item.isOffPath()) {
+                continue;
+            }
             if (packet.getPathId() != 0) {
                 QuicPath path = paths.get(packet.getPathId());
                 if (path != null) {

@@ -95,6 +95,13 @@ public class PacketAssembler {
             return Optional.empty();
         }
 
+        SendRequestQueue.OffPathRequest offPath = requestQueue.pollOffPathRequest();
+        if (offPath != null) {
+            QuicPacket packet = createPacket(defaultClientAddress);
+            offPath.frames().forEach(packet::addFrame);
+            return Optional.of(new SendItem(packet, offPath.destination()).offPath());
+        }
+
         // First check for alternate client address (has always priority)
         if (requestQueue.hasAlternateAddressRequest()) {
             assert level == EncryptionLevel.App;

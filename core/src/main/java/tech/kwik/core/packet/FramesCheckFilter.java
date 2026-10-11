@@ -67,7 +67,8 @@ public class FramesCheckFilter extends BasePacketFilter {
                 || frame instanceof NewConnectionIdFrame && ((NewConnectionIdFrame) frame).getPathId() >= 0
                 || frame instanceof RetireConnectionIdFrame && ((RetireConnectionIdFrame) frame).getPathId() >= 0
                 || frame instanceof PathAbandonFrame || frame instanceof PathStatusFrame || frame instanceof MaxPathIdFrame
-                || frame instanceof PathsBlockedFrame || frame instanceof PathCidsBlockedFrame;
+                || frame instanceof PathsBlockedFrame || frame instanceof PathCidsBlockedFrame
+                || frame instanceof AddAddressFrame || frame instanceof ReachOutFrame || frame instanceof RemoveAddressFrame;
     }
 
     private void checkFrames(InitialPacket packet) throws TransportError {

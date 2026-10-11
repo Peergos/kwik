@@ -45,6 +45,7 @@ public class ServerConnectionConfigImpl implements ServerConnectionConfig {
     private int connectionIdLength = DEFAULT_CONNECTION_ID_LENGTH;
     private boolean useStrictSmallestAllowedMaximumDatagramSize;
     private long multipathMaxPathId = -1;
+    private int natTraversalMaxAddresses;
 
     private ServerConnectionConfigImpl() {
     }
@@ -103,6 +104,11 @@ public class ServerConnectionConfigImpl implements ServerConnectionConfig {
         return multipathMaxPathId;
     }
 
+    @Override
+    public int natTraversalMaxAddresses() {
+        return natTraversalMaxAddresses;
+    }
+
     public RetryRequired retryRequired() {
         return retryRequired;
     }
@@ -141,6 +147,7 @@ public class ServerConnectionConfigImpl implements ServerConnectionConfig {
         configBuilder.connectionIdLength(this.connectionIdLength());
         configBuilder.useStrictSmallestAllowedMaximumDatagramSize(this.useStrictSmallestAllowedMaximumDatagramSize());
         configBuilder.multipath(this.multipathMaxPathId);
+        configBuilder.natTraversal(this.natTraversalMaxAddresses);
 
         return configBuilder.build();
     }
@@ -315,6 +322,12 @@ public class ServerConnectionConfigImpl implements ServerConnectionConfig {
         @Override
         public Builder multipath(long maxPathId) {
             config.multipathMaxPathId = maxPathId;
+            return this;
+        }
+
+        @Override
+        public Builder natTraversal(int maxRemoteAddresses) {
+            config.natTraversalMaxAddresses = maxRemoteAddresses;
             return this;
         }
 

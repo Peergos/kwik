@@ -419,6 +419,9 @@ public class ServerConnectionImpl extends QuicConnectionImpl implements ServerCo
         if (configuration.multipathMaxPathId() >= 0) {
             enableMultipath(configuration.multipathMaxPathId());
         }
+        if (configuration.natTraversalMaxAddresses() > 0) {
+            enableNatTraversal(configuration.natTraversalMaxAddresses());
+        }
 
         if (protocolSettings.sendObservedAddressReports() || protocolSettings.receiveObservedAddressReports()) {
             enableAddressDiscovery(protocolSettings.sendObservedAddressReports(), protocolSettings.receiveObservedAddressReports());
@@ -444,6 +447,7 @@ public class ServerConnectionImpl extends QuicConnectionImpl implements ServerCo
 
         parameters.setAddressDiscoveryRole(getAddressDiscoveryRole());
         parameters.setInitialMaxPathId(getLocalMaxPathId());
+        parameters.setMaxRemoteNatTraversalAddresses(getLocalMaxNatTraversalAddresses());
 
         return parameters;
     }
@@ -629,6 +633,9 @@ public class ServerConnectionImpl extends QuicConnectionImpl implements ServerCo
 
     @Override
     public void process(PathResponseFrame pathResponseFrame, QuicPacket packet, PacketMetaData metaData) {
+        if (natTraversalResponse(pathResponseFrame, metaData)) {
+            return;
+        }
         if (packet.getPathId() != 0) {
             super.process(pathResponseFrame, packet, metaData);
         }
@@ -721,6 +728,11 @@ public class ServerConnectionImpl extends QuicConnectionImpl implements ServerCo
                 || transportParameters.getRetrySourceConnectionId() != null || transportParameters.getStatelessResetToken() != null) {
             throw new TransportError(TRANSPORT_PARAMETER_ERROR);
         }
+    }
+
+    @Override
+    protected InetSocketAddress initialPathPeerAddress() {
+        return initialClientAddress;
     }
 
     @Override

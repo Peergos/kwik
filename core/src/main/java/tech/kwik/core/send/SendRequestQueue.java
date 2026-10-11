@@ -41,6 +41,7 @@ public class SendRequestQueue {
     private Deque<SendRequest> requestQueue = new ConcurrentLinkedDeque<>();
     private Deque<List<QuicFrame>> probeQueue = new ConcurrentLinkedDeque<>();
     private Deque<SendRequest> altAddressRequestQueue = new ConcurrentLinkedDeque<>();
+    private final Deque<OffPathRequest> offPathQueue = new ConcurrentLinkedDeque<>();
     // Requests that must be sent on this queue's multipath path; null for queues that are not a path's.
     private final Deque<SendRequest> ownQueue;
     // For a path's queue: whether it takes frames from the shared queue (not while the path is being validated).
@@ -214,7 +215,7 @@ public class SendRequestQueue {
      */
     public boolean isIdle() {
         return nextAckTime == null && (!sharedEnabled || requestQueue.isEmpty()) && probeQueue.isEmpty()
-                && altAddressRequestQueue.isEmpty() && (ownQueue == null || ownQueue.isEmpty());
+                && altAddressRequestQueue.isEmpty() && offPathQueue.isEmpty() && (ownQueue == null || ownQueue.isEmpty());
     }
 
     public boolean hasRequests() {
@@ -292,6 +293,38 @@ public class SendRequestQueue {
     @Override
     public String toString() {
         return "SendRequestQueue[" + encryptionLevel + "]";
+    }
+
+    /**
+     * Frames to send in a packet of their own to another address than the path's, with the path's connection ID
+     * and packet numbers, and without loss recovery or congestion control (NAT traversal probes and their responses).
+     */
+    public static final class OffPathRequest {
+        private final List<QuicFrame> frames;
+        private final InetSocketAddress destination;
+
+        OffPathRequest(List<QuicFrame> frames, InetSocketAddress destination) {
+            this.frames = frames;
+            this.destination = destination;
+        }
+
+        public List<QuicFrame> frames() {
+            return frames;
+        }
+
+        public InetSocketAddress destination() {
+            return destination;
+        }
+    }
+
+    public void addOffPathRequest(List<QuicFrame> frames, InetSocketAddress destination) {
+        if (offPathQueue.size() < MAX_QUEUED_PATH_RESPONSE_FRAMES) {
+            offPathQueue.add(new OffPathRequest(frames, destination));
+        }
+    }
+
+    public OffPathRequest pollOffPathRequest() {
+        return offPathQueue.poll();
     }
 
     public boolean hasAlternateAddressRequest() {

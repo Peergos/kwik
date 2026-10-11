@@ -366,6 +366,15 @@ abstract public class QuicPacket {
         if (type == PathCidsBlockedFrame.TYPE) {
             return new PathCidsBlockedFrame().parse(buffer, log);
         }
+        if (AddAddressFrame.isType(type)) {
+            return new AddAddressFrame().parse(buffer, log);
+        }
+        if (ReachOutFrame.isType(type)) {
+            return new ReachOutFrame().parse(buffer, log);
+        }
+        if (type == RemoveAddressFrame.TYPE) {
+            return new RemoveAddressFrame().parse(buffer, log);
+        }
         return null;
     }
 

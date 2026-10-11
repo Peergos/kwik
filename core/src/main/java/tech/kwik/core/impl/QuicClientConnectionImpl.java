@@ -370,6 +370,7 @@ public class QuicClientConnectionImpl extends QuicConnectionImpl implements Quic
 
         parameters.setAddressDiscoveryRole(getAddressDiscoveryRole());
         parameters.setInitialMaxPathId(getLocalMaxPathId());
+        parameters.setMaxRemoteNatTraversalAddresses(getLocalMaxNatTraversalAddresses());
 
         return parameters;
     }
@@ -1417,6 +1418,11 @@ public class QuicClientConnectionImpl extends QuicConnectionImpl implements Quic
     }
 
     @Override
+    protected InetSocketAddress initialPathPeerAddress() {
+        return new InetSocketAddress(serverAddress, serverPort);
+    }
+
+    @Override
     public List<X509Certificate> getServerCertificateChain() {
         return tlsEngine.getServerCertificateChain();
     }
@@ -1527,6 +1533,7 @@ public class QuicClientConnectionImpl extends QuicConnectionImpl implements Quic
         private SharedEndpoint sharedEndpoint;
         private boolean sendObservedAddress;
         private long multipathMaxPathId = -1;
+        private int natTraversalMaxAddresses;
         private boolean receiveObservedAddress;
 
         private BuilderImpl() {
@@ -1577,6 +1584,9 @@ public class QuicClientConnectionImpl extends QuicConnectionImpl implements Quic
 
             if (multipathMaxPathId >= 0) {
                 quicConnection.enableMultipath(multipathMaxPathId);
+            }
+            if (natTraversalMaxAddresses > 0) {
+                quicConnection.enableNatTraversal(natTraversalMaxAddresses);
             }
             if (sendObservedAddress || receiveObservedAddress) {
                 quicConnection.enableAddressDiscovery(sendObservedAddress, receiveObservedAddress);
@@ -1905,6 +1915,12 @@ public class QuicClientConnectionImpl extends QuicConnectionImpl implements Quic
         @Override
         public Builder multipath(long maxPathId) {
             this.multipathMaxPathId = maxPathId;
+            return this;
+        }
+
+        @Override
+        public Builder natTraversal(int maxRemoteAddresses) {
+            this.natTraversalMaxAddresses = maxRemoteAddresses;
             return this;
         }
 

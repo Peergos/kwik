@@ -35,6 +35,8 @@ import java.util.Optional;
 import tech.kwik.core.cid.ConnectionIdProvider;
 import tech.kwik.core.send.QuicPath;
 import tech.kwik.core.packet.PacketParser;
+import tech.kwik.core.path.NatTraversal;
+import tech.kwik.core.path.NatTraversalEvent;
 import tech.kwik.core.path.PathManager;
 import tech.kwik.core.packet.BasePacketFilter;
 import tech.kwik.core.packet.PacketFilter;
@@ -78,6 +80,10 @@ public abstract class QuicConnectionImpl implements QuicConnection, PacketProces
     private volatile Long peerMaxPathId;
     private volatile PathManager pathManager;
     private volatile Consumer<QuicPath> pathListener;
+    private volatile Integer localMaxNatTraversalAddresses;
+    private volatile NatTraversal natTraversal;
+    private volatile Consumer<NatTraversalEvent> natTraversalListener;
+    private ScheduledFuture<?> natTraversalRetry;
     // Receiver thread only.
     private final java.util.Set<Runnable> batchEndActions = new java.util.LinkedHashSet<>();
     private volatile Integer addressDiscoveryRole;
@@ -471,8 +477,12 @@ public abstract class QuicConnectionImpl implements QuicConnection, PacketProces
         localMaxPathId = maxPathId;
     }
 
+    /**
+     * The highest path ID the peer may use: initially as offered, and raised as paths are abandoned.
+     */
     protected Long getLocalMaxPathId() {
-        return localMaxPathId;
+        PathManager manager = pathManager;
+        return manager != null? Long.valueOf(manager.getLocalMaxPathId()): localMaxPathId;
     }
 
     /**
@@ -490,6 +500,332 @@ public abstract class QuicConnectionImpl implements QuicConnection, PacketProces
     }
 
     /**
+     * Offers iroh's QUIC NAT traversal (needs multipath), accepting up to the given number of the peer's addresses.
+     */
+    public void enableNatTraversal(int maxRemoteAddresses) {
+        if (maxRemoteAddresses < 1 || maxRemoteAddresses > 255) {
+            throw new IllegalArgumentException("max remote addresses must be in 1..255");
+        }
+        localMaxNatTraversalAddresses = maxRemoteAddresses;
+    }
+
+    protected Integer getLocalMaxNatTraversalAddresses() {
+        return localMaxNatTraversalAddresses;
+    }
+
+    /**
+     * Whether both endpoints support iroh's QUIC NAT traversal (and multipath).
+     */
+    public boolean isNatTraversalEnabled() {
+        return natTraversal != null;
+    }
+
+    private NatTraversal requireNatTraversal() {
+        NatTraversal nat = natTraversal;
+        if (nat == null) {
+            throw new IllegalStateException("NAT traversal not negotiated");
+        }
+        return nat;
+    }
+
+    /**
+     * Adds an address at which this endpoint may be reachable. A server advertises it to the client (ADD_ADDRESS); a
+     * client sends it with its next round (REACH_OUT).
+     */
+    public void addNatTraversalAddress(InetSocketAddress address) {
+        AddAddressFrame frame = requireNatTraversal().addLocalAddress(address);
+        if (frame != null) {
+            send(frame, this::retransmitAddAddress, true);
+        }
+    }
+
+    public void removeNatTraversalAddress(InetSocketAddress address) {
+        RemoveAddressFrame frame = requireNatTraversal().removeLocalAddress(address);
+        if (frame != null) {
+            send(frame, this::retransmit, true);
+        }
+    }
+
+    public List<InetSocketAddress> getLocalNatTraversalAddresses() {
+        return requireNatTraversal().localAddresses();
+    }
+
+    /**
+     * The addresses the server advertised (client only).
+     */
+    public List<InetSocketAddress> getRemoteNatTraversalAddresses() {
+        return requireNatTraversal().remoteAddresses();
+    }
+
+    /**
+     * Receives the server's ADD_ADDRESS and REMOVE_ADDRESS (client only).
+     */
+    public void setNatTraversalListener(Consumer<NatTraversalEvent> listener) {
+        natTraversalListener = listener;
+    }
+
+    /**
+     * Starts a NAT traversal round (client only), cancelling the previous one: sends this endpoint's addresses to the
+     * server, which probes them, and probes the server's addresses. A path is opened to each that answers.
+     * @return the server addresses being probed
+     * @throws NatTraversal.NotEnoughAddressesException when no local address was added
+     */
+    public List<InetSocketAddress> initiateNatTraversalRound() {
+        NatTraversal nat = requireNatTraversal();
+        if (!nat.isClient()) {
+            throw new IllegalStateException("only the client starts NAT traversal rounds");
+        }
+        if (connectionState != Status.Connected) {
+            throw new IllegalStateException("connection not open");
+        }
+        NatTraversal.Round round = nat.initiateRound();
+        round.reachOuts().forEach(frame -> send(frame, this::retransmitReachOut));
+        sendProbes(nat);
+        scheduleProbeRetry(nat);
+        getSender().flush();
+        return round.probed();
+    }
+
+    private void retransmit(QuicFrame frame) {
+        send(frame, this::retransmit);
+    }
+
+    private void retransmitAddAddress(QuicFrame frame) {
+        NatTraversal nat = natTraversal;
+        if (nat != null && nat.isAdvertised((AddAddressFrame) frame)) {
+            send(frame, this::retransmitAddAddress, true);
+        }
+    }
+
+    private void retransmitReachOut(QuicFrame frame) {
+        NatTraversal nat = natTraversal;
+        if (nat != null && ((ReachOutFrame) frame).getRound() == nat.currentRound()) {
+            send(frame, this::retransmitReachOut, true);
+        }
+    }
+
+    @Override
+    public void process(AddAddressFrame addAddressFrame, QuicPacket packet, PacketMetaData metaData) {
+        NatTraversal nat = natTraversal;
+        if (nat == null || !nat.isClient()) {
+            immediateCloseWithError(PROTOCOL_VIOLATION.value, "unexpected ADD_ADDRESS");
+            return;
+        }
+        try {
+            InetSocketAddress added = nat.addRemoteAddress(addAddressFrame);
+            if (added != null) {
+                natTraversalEvent(new NatTraversalEvent(NatTraversalEvent.Type.ADDED, added));
+            }
+        }
+        catch (NatTraversal.TooManyAddressesException e) {
+            log.warn("Ignoring " + addAddressFrame + ": too many addresses");
+        }
+    }
+
+    @Override
+    public void process(RemoveAddressFrame removeAddressFrame, QuicPacket packet, PacketMetaData metaData) {
+        NatTraversal nat = natTraversal;
+        if (nat == null || !nat.isClient()) {
+            immediateCloseWithError(PROTOCOL_VIOLATION.value, "unexpected REMOVE_ADDRESS");
+            return;
+        }
+        InetSocketAddress removed = nat.removeRemoteAddress(removeAddressFrame);
+        if (removed != null) {
+            natTraversalEvent(new NatTraversalEvent(NatTraversalEvent.Type.REMOVED, removed));
+        }
+    }
+
+    @Override
+    public void process(ReachOutFrame reachOutFrame, QuicPacket packet, PacketMetaData metaData) {
+        NatTraversal nat = natTraversal;
+        if (nat == null || nat.isClient()) {
+            immediateCloseWithError(PROTOCOL_VIOLATION.value, "unexpected REACH_OUT");
+            return;
+        }
+        boolean newRound;
+        try {
+            newRound = nat.handleReachOut(reachOutFrame);
+        }
+        catch (NatTraversal.TooManyAddressesException e) {
+            immediateCloseWithError(PROTOCOL_VIOLATION.value, "too many REACH_OUT addresses");
+            return;
+        }
+        sendProbes(nat);
+        if (newRound) {
+            scheduleProbeRetry(nat);
+        }
+    }
+
+    private void natTraversalEvent(NatTraversalEvent event) {
+        Consumer<NatTraversalEvent> listener = natTraversalListener;
+        if (listener != null) {
+            callbackThread.submit(() -> listener.accept(event));
+        }
+    }
+
+    // noq's default initial RTT, from which the probe retry backoff starts.
+    private static final long NAT_TRAVERSAL_INITIAL_RTT_MILLIS = 333;
+
+    private synchronized void scheduleProbeRetry(NatTraversal nat) {
+        if (natTraversalRetry != null) {
+            natTraversalRetry.cancel(false);
+            natTraversalRetry = null;
+        }
+        long delay = nat.retryDelayMillis(NAT_TRAVERSAL_INITIAL_RTT_MILLIS);
+        if (delay < 0 || connectionState.closingOrDraining()) {
+            return;
+        }
+        try {
+            natTraversalRetry = scheduler.schedule(() -> {
+                nat.queueRetries();
+                sendProbes(nat);
+                getSender().flush();
+                scheduleProbeRetry(nat);
+            }, delay, TimeUnit.MILLISECONDS);
+        }
+        catch (RejectedExecutionException closed) {
+        }
+    }
+
+    /**
+     * Sends a PATH_CHALLENGE to each address due a probe, off-path: on a validated path, but to that address.
+     */
+    private void sendProbes(NatTraversal nat) {
+        for (InetSocketAddress address : nat.takePendingProbes()) {
+            byte[] data = QuicPath.randomChallengeData();
+            if (sendOffPath(-1, List.of(new PathChallengeFrame(quicVersion.getVersion(), data)), address)) {
+                nat.probeSent(address, challengeValue(data));
+            }
+        }
+    }
+
+    /**
+     * Answers a PATH_CHALLENGE that came from another address than its path's: back to that address, on the same
+     * path, without migrating. A client adds its own challenge, so the server's probe also validates the address for
+     * the client (which then opens a path to it).
+     */
+    private void respondOffPath(NatTraversal nat, PathResponseFrame response, long pathId, InetSocketAddress source) {
+        List<QuicFrame> frames = new ArrayList<>(List.of(response));
+        long challenge = 0;
+        boolean challenging = nat.isClient() && !hasValidatedPathTo(source);
+        if (challenging) {
+            byte[] data = QuicPath.randomChallengeData();
+            frames.add(new PathChallengeFrame(quicVersion.getVersion(), data));
+            challenge = challengeValue(data);
+        }
+        if (sendOffPath(pathId, frames, source) && challenging) {
+            nat.probeSent(source, challenge);
+        }
+    }
+
+    /**
+     * Whether the PATH_RESPONSE answers a NAT traversal probe; a client then opens a path to its source address.
+     */
+    protected boolean natTraversalResponse(PathResponseFrame frame, PacketMetaData metaData) {
+        NatTraversal nat = natTraversal;
+        if (nat == null || !nat.handlePathResponse(metaData.sourceAddress(), challengeValue(frame.getData()))) {
+            return false;
+        }
+        log.info("NAT traversal probe to " + metaData.sourceAddress() + " answered");
+        openNatTraversedPaths();
+        return true;
+    }
+
+    private void openNatTraversedPaths() {
+        NatTraversal nat = natTraversal;
+        if (nat == null || !nat.isClient()) {
+            return;
+        }
+        InetSocketAddress address;
+        while ((address = nat.pollPathToOpen()) != null) {
+            if (hasPathTo(address)) {
+                continue;
+            }
+            Optional<QuicPath> path = openPath(address);
+            if (path.isEmpty()) {
+                // No path ID or connection IDs yet: retried on MAX_PATH_ID or PATH_NEW_CONNECTION_ID.
+                nat.pushPathToOpen(address);
+                return;
+            }
+            log.info("Opened path " + path.get().getId() + " to NAT traversed address " + address);
+        }
+    }
+
+    /**
+     * Sends the frames in a packet of their own to the given address, with the packet numbers and connection ID of
+     * the given path, or of any validated path when -1, outside loss recovery and congestion control.
+     */
+    private boolean sendOffPath(long pathId, List<QuicFrame> frames, InetSocketAddress destination) {
+        if (pathId == 0 || (pathId < 0 && !getSender().isInitialPathAbandoned())) {
+            getSender().sendOffPath(frames, destination);
+            return true;
+        }
+        QuicPath path = pathId > 0? getSender().getPath(pathId): getSender().getPaths().stream()
+                .filter(p -> p.getState() == QuicPath.State.ACTIVE)
+                .findFirst().orElse(null);
+        if (path == null || path.getState() == QuicPath.State.ABANDONED) {
+            return false;
+        }
+        path.sendOffPath(frames, destination);
+        getSender().flush();
+        return true;
+    }
+
+    private boolean isOnPath(long pathId, InetSocketAddress source) {
+        InetSocketAddress pathAddress = pathId == 0? initialPathPeerAddress(): Optional.ofNullable(getSender().getPath(pathId)).map(QuicPath::getPeerAddress).orElse(null);
+        return pathAddress == null || NatTraversal.canonical(pathAddress).equals(NatTraversal.canonical(source));
+    }
+
+    /**
+     * Whether the initial path, if not abandoned, or a validated multipath path goes to a peer address that matches.
+     */
+    public boolean hasActivePath(java.util.function.Predicate<InetSocketAddress> peerAddress) {
+        if (!getSender().isInitialPathAbandoned() && peerAddress.test(initialPathPeerAddress())) {
+            return true;
+        }
+        return getSender().getPaths().stream()
+                .anyMatch(p -> p.getState() == QuicPath.State.ACTIVE && peerAddress.test(p.getPeerAddress()));
+    }
+
+    private boolean hasValidatedPathTo(InetSocketAddress address) {
+        InetSocketAddress canonical = NatTraversal.canonical(address);
+        if (!getSender().isInitialPathAbandoned() && NatTraversal.canonical(initialPathPeerAddress()).equals(canonical)) {
+            return true;
+        }
+        return getSender().getPaths().stream()
+                .anyMatch(p -> p.getState() == QuicPath.State.ACTIVE && NatTraversal.canonical(p.getPeerAddress()).equals(canonical));
+    }
+
+    private boolean hasPathTo(InetSocketAddress address) {
+        InetSocketAddress canonical = NatTraversal.canonical(address);
+        if (!getSender().isInitialPathAbandoned() && NatTraversal.canonical(initialPathPeerAddress()).equals(canonical)) {
+            return true;
+        }
+        return getSender().getPaths().stream()
+                .anyMatch(p -> p.getState() != QuicPath.State.ABANDONED && NatTraversal.canonical(p.getPeerAddress()).equals(canonical));
+    }
+
+    // https://www.rfc-editor.org/rfc/rfc9000.html#section-9.1: only these frames make a packet a probing packet.
+    private static boolean isProbing(QuicPacket packet) {
+        for (QuicFrame frame : packet.getFrames()) {
+            if (!(frame instanceof Padding || frame instanceof PathChallengeFrame || frame instanceof PathResponseFrame
+                    || frame instanceof NewConnectionIdFrame || frame instanceof ObservedAddressFrame)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private static long challengeValue(byte[] data) {
+        return java.nio.ByteBuffer.wrap(data).getLong();
+    }
+
+    /**
+     * The peer's address on the initial path (path 0).
+     */
+    protected abstract InetSocketAddress initialPathPeerAddress();
+
+    /**
      * Opens a new multipath path to the given peer address, on the lowest path ID for which both sides issued
      * connection IDs. The path carries data once validated (see {@link #setPathListener}).
      * @return the new path, or empty when there is no usable path ID
@@ -499,7 +835,7 @@ public abstract class QuicConnectionImpl implements QuicConnection, PacketProces
         if (manager == null) {
             return Optional.empty();
         }
-        for (long pathId = 1; pathId <= Long.min(localMaxPathId, peerMaxPathId); pathId++) {
+        for (long pathId = 1; pathId <= Long.min(getLocalMaxPathId(), peerMaxPathId); pathId++) {
             if (getSender().getPath(pathId) == null && !manager.isAbandoned(pathId) && manager.hasConnectionIds(pathId)) {
                 QuicPath path = getSender().addPath(pathId, peerAddress, pathConnectionIds(pathId), QuicPath.State.VALIDATING);
                 challenge(path);
@@ -617,8 +953,9 @@ public abstract class QuicConnectionImpl implements QuicConnection, PacketProces
             challenge(path);
             abandonUnlessValidated(path);
         }
-        else if (!metaData.sourceAddress().equals(path.getPeerAddress())) {
+        else if (!metaData.sourceAddress().equals(path.getPeerAddress()) && !(natTraversal != null && isProbing(packet))) {
             // https://www.ietf.org/archive/id/draft-ietf-quic-multipath-21.html#section-3.1.2: migration of that path.
+            // With NAT traversal, probing packets from other addresses are off-path probes and do not migrate.
             path.setPeerAddress(metaData.sourceAddress());
             if (path.getState() != QuicPath.State.ABANDONED) {
                 path.setState(QuicPath.State.VALIDATING);
@@ -682,8 +1019,8 @@ public abstract class QuicConnectionImpl implements QuicConnection, PacketProces
             immediateCloseWithError(PROTOCOL_VIOLATION.value, "multipath frame received without multipath negotiated");
             return false;
         }
-        if (pathId > localMaxPathId) {
-            immediateCloseWithError(PROTOCOL_VIOLATION.value, "path id " + pathId + " exceeds maximum path id " + localMaxPathId);
+        if (pathId > getLocalMaxPathId()) {
+            immediateCloseWithError(PROTOCOL_VIOLATION.value, "path id " + pathId + " exceeds maximum path id " + getLocalMaxPathId());
             return false;
         }
         return pathId == 0;
@@ -692,7 +1029,7 @@ public abstract class QuicConnectionImpl implements QuicConnection, PacketProces
     @Override
     public void process(PathAbandonFrame pathAbandonFrame, QuicPacket packet, PacketMetaData metaData) {
         long pathId = pathAbandonFrame.getPathId();
-        if (pathId > 0 && isMultipathEnabled() && pathId <= localMaxPathId) {
+        if (pathId > 0 && isMultipathEnabled() && pathId <= getLocalMaxPathId()) {
             // https://www.ietf.org/archive/id/draft-ietf-quic-multipath-21.html#section-3.4
             // "When an endpoint receives a PATH_ABANDON frame, it MUST send a corresponding PATH_ABANDON frame, if it
             //  has not already done so"
@@ -730,12 +1067,13 @@ public abstract class QuicConnectionImpl implements QuicConnection, PacketProces
         if (maxPathIdFrame.getMaxPathId() > peerMaxPathId) {
             peerMaxPathId = maxPathIdFrame.getMaxPathId();
             pathManager.peerMaxPathIdIncreased(maxPathIdFrame.getMaxPathId());
+            openNatTraversedPaths();
         }
     }
 
     @Override
     public void process(PathsBlockedFrame pathsBlockedFrame, QuicPacket packet, PacketMetaData metaData) {
-        if (!isMultipathEnabled() || pathsBlockedFrame.getMaxPathId() > localMaxPathId) {
+        if (!isMultipathEnabled() || pathsBlockedFrame.getMaxPathId() > getLocalMaxPathId()) {
             immediateCloseWithError(PROTOCOL_VIOLATION.value, "invalid PATHS_BLOCKED frame");
         }
     }
@@ -748,6 +1086,10 @@ public abstract class QuicConnectionImpl implements QuicConnection, PacketProces
     protected void processCommonTransportParameters(TransportParameters peerTransportParams) {
         peerAddressDiscoveryRole = peerTransportParams.getAddressDiscoveryRole();
         peerMaxPathId = peerTransportParams.getInitialMaxPathId();
+        Integer peerMaxNatTraversalAddresses = peerTransportParams.getMaxRemoteNatTraversalAddresses();
+        if (localMaxNatTraversalAddresses != null && peerMaxNatTraversalAddresses != null && isMultipathEnabled()) {
+            natTraversal = new NatTraversal(role == Role.Client, localMaxNatTraversalAddresses, peerMaxNatTraversalAddresses);
+        }
         if (isMultipathEnabled()) {
             PathManager manager = new PathManager(localMaxPathId, peerMaxPathId, getConnectionIdManager(), getSender(),
                     (error, reason) -> immediateCloseWithError(error, reason));
@@ -932,8 +1274,9 @@ public abstract class QuicConnectionImpl implements QuicConnection, PacketProces
     @Override
     public void process(NewConnectionIdFrame newConnectionIdFrame, QuicPacket packet, PacketMetaData metaData) {
         if (!forInitialPath(newConnectionIdFrame.getPathId())) {
-            if (isMultipathEnabled() && newConnectionIdFrame.getPathId() > 0 && newConnectionIdFrame.getPathId() <= localMaxPathId) {
+            if (isMultipathEnabled() && newConnectionIdFrame.getPathId() > 0 && newConnectionIdFrame.getPathId() <= getLocalMaxPathId()) {
                 pathManager.process(newConnectionIdFrame);
+                openNatTraversedPaths();
             }
             return;
         }
@@ -949,6 +1292,11 @@ public abstract class QuicConnectionImpl implements QuicConnection, PacketProces
     @Override
     public void process(PathChallengeFrame pathChallengeFrame, QuicPacket packet, PacketMetaData metaData) {
         PathResponseFrame response = new PathResponseFrame(quicVersion.getVersion(), pathChallengeFrame.getData());
+        NatTraversal nat = natTraversal;
+        if (nat != null && !isOnPath(packet.getPathId(), metaData.sourceAddress())) {
+            respondOffPath(nat, response, packet.getPathId(), metaData.sourceAddress());
+            return;
+        }
         if (packet.getPathId() != 0) {
             // https://www.ietf.org/archive/id/draft-ietf-quic-multipath-21.html#section-3.1
             // "If an endpoint sends a PATH_RESPONSE (...), it MUST be sent on the same path as used by the packet that
@@ -967,6 +1315,9 @@ public abstract class QuicConnectionImpl implements QuicConnection, PacketProces
 
     @Override
     public void process(PathResponseFrame pathResponseFrame, QuicPacket packet, PacketMetaData metaData) {
+        if (natTraversalResponse(pathResponseFrame, metaData)) {
+            return;
+        }
         QuicPath path = getSender().getPath(packet.getPathId());
         if (path != null && path.getState() == QuicPath.State.VALIDATING && path.challengeAnswered(pathResponseFrame.getData())) {
             path.setState(QuicPath.State.ACTIVE);

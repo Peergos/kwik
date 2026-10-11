@@ -723,6 +723,11 @@ class QuicConnectionImplTest {
         }
 
         @Override
+        protected java.net.InetSocketAddress initialPathPeerAddress() {
+            return null;
+        }
+
+        @Override
         public void process(AckFrame ackFrame, QuicPacket packet, PacketMetaData metaData) {
         }
 

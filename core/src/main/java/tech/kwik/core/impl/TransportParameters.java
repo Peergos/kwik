@@ -52,6 +52,8 @@ public class TransportParameters {
     private Integer addressDiscoveryRole;
     // draft-ietf-quic-multipath; null when multipath is not supported.
     private Long initialMaxPathId;
+    // iroh's QUIC NAT traversal: how many addresses the peer may advertise; null when not supported.
+    private Integer maxRemoteNatTraversalAddresses;
     // https://www.ietf.org/archive/id/draft-ietf-quic-reliable-stream-reset-07.html#section-3
     private boolean resetStreamAtSupport;
 
@@ -275,6 +277,14 @@ public class TransportParameters {
 
     public void setInitialMaxPathId(Long initialMaxPathId) {
         this.initialMaxPathId = initialMaxPathId;
+    }
+
+    public Integer getMaxRemoteNatTraversalAddresses() {
+        return maxRemoteNatTraversalAddresses;
+    }
+
+    public void setMaxRemoteNatTraversalAddresses(Integer maxRemoteNatTraversalAddresses) {
+        this.maxRemoteNatTraversalAddresses = maxRemoteNatTraversalAddresses;
     }
 
     public Integer getAddressDiscoveryRole() {

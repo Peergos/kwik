@@ -40,6 +40,13 @@ public interface ServerConnectionConfig extends ConnectionConfig {
         return -1;
     }
 
+    /**
+     * How many addresses the client may send for iroh's QUIC NAT traversal, or 0 when not offered.
+     */
+    default int natTraversalMaxAddresses() {
+        return 0;
+    }
+
     static Builder builder() {
         return new ServerConnectionConfigImpl.BuilderImpl();
     }
@@ -77,5 +84,11 @@ public interface ServerConnectionConfig extends ConnectionConfig {
          * Offers the multipath extension (draft-ietf-quic-multipath), allowing the peer path IDs up to the given value.
          */
         Builder multipath(long maxPathId);
+
+        /**
+         * Offers iroh's QUIC NAT traversal (which needs multipath), accepting up to the given number of the client's
+         * addresses per round (1..255).
+         */
+        Builder natTraversal(int maxRemoteAddresses);
     }
 }

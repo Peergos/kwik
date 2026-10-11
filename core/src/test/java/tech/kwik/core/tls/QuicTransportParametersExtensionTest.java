@@ -254,6 +254,20 @@ class QuicTransportParametersExtensionTest {
     }
 
     @Test
+    void natTraversalParameterShouldRoundTrip() throws Exception {
+        TransportParameters tp = new TransportParameters(10, 1_048_576, 1024, 256);
+        tp.setInitialSourceConnectionId(new byte[] { 0x01, 0x02, 0x03, 0x04 });
+        tp.setMaxRemoteNatTraversalAddresses(200);
+        byte[] serializedForm = new QuicTransportParametersExtension(Version.getDefault(), tp, Role.Client).getBytes();
+        assertThat(tech.kwik.core.util.Bytes.bytesToHex(serializedForm)).contains("c0003d7f9112040101c8");
+
+        QuicTransportParametersExtension parsed = new QuicTransportParametersExtension(Version.getDefault());
+        parsed.parse(ByteBuffer.wrap(serializedForm), Role.Server, mock(Logger.class));
+
+        assertThat(parsed.getTransportParameters().getMaxRemoteNatTraversalAddresses()).isEqualTo(200);
+    }
+
+    @Test
     void absentInitialMaxPathIdMeansNoMultipath() throws Exception {
         TransportParameters tp = new TransportParameters(10, 1_048_576, 1024, 256);
         tp.setInitialSourceConnectionId(new byte[] { 0x01, 0x02, 0x03, 0x04 });
