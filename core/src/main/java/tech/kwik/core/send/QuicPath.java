@@ -64,11 +64,14 @@ public class QuicPath {
     private final ConnectionIdProvider connectionIds;
     private volatile int maxPacketSize;
     private volatile byte[] challenge;
+    private volatile Instant challengeSent;
+    private final Clock clock;
     private static final java.security.SecureRandom RANDOM = new java.security.SecureRandom();
 
     QuicPath(long id, InetSocketAddress peerAddress, State state, Clock clock, VersionHolder version, Role role,
          SendRequestQueue sharedAppQueue, ConnectionIdProvider connectionIds, int maxPacketSize, SenderImpl sender, Logger log) {
         this.id = id;
+        this.clock = clock;
         this.peerAddress = peerAddress;
         this.state = state;
         this.maxPacketSize = maxPacketSize;
@@ -148,6 +151,7 @@ public class QuicPath {
         byte[] data = new byte[8];
         RANDOM.nextBytes(data);
         challenge = data;
+        challengeSent = clock.instant();
         return data;
     }
 
@@ -160,7 +164,13 @@ public class QuicPath {
      */
     public boolean challengeAnswered(byte[] data) {
         byte[] current = challenge;
-        return current != null && java.security.MessageDigest.isEqual(current, data);
+        if (current == null || !java.security.MessageDigest.isEqual(current, data)) {
+            return false;
+        }
+        // https://www.rfc-editor.org/rfc/rfc9002#section-6.2.2: the validation round trip is only an initial RTT,
+        // which lets the sender compare the new path with the others before its first RTT sample.
+        rttEstimator.resetInitialRtt((int) java.time.Duration.between(challengeSent, clock.instant()).toMillis());
+        return true;
     }
 
     public AckGenerator getAckGenerator() {

@@ -140,6 +140,8 @@ public class SenderImpl implements Sender, CongestionControlEventListener, Hands
     // Multipath paths other than path 0, whose state is in this class's fields.
     private final Map<Long, QuicPath> paths = new ConcurrentHashMap<>();
     private final java.util.Queue<Long> probeTimeouts = new java.util.concurrent.ConcurrentLinkedQueue<>();
+    private static final int SUSPECT_AFTER_PROBE_TIMEOUTS = 2;
+    private final Map<Long, Integer> consecutiveProbeTimeouts = new ConcurrentHashMap<>();
     private volatile boolean initialPathSuspect;
     private volatile boolean initialPathAbandoned;
     private byte[] batchBuffer;
@@ -532,21 +534,31 @@ public class SenderImpl implements Sender, CongestionControlEventListener, Hands
     }
 
     /**
-     * Notes a probe timeout on a path (0 for the initial path). With multipath, a path that times out while another
-     * works is suspected broken: what is in flight on it is retransmitted (on other paths), and it gets no new data
-     * until it is acknowledged again.
+     * Notes a probe timeout on a path (0 for the initial path). With multipath, a path that times out twice in a row
+     * while another works is suspected broken: what is in flight on it is retransmitted (on other paths), and it gets
+     * no new data until it is acknowledged again. One timeout is not enough: with a very small RTT (e.g. on loopback)
+     * the PTO is a few milliseconds, and a scheduling delay would move the data away from the best path.
      */
     void probeTimeout(long pathId) {
-        if (!paths.isEmpty()) {
+        if (!paths.isEmpty() && consecutiveProbeTimeouts.merge(pathId, 1, Integer::sum) >= SUSPECT_AFTER_PROBE_TIMEOUTS) {
             probeTimeouts.add(pathId);
             wakeUpSenderLoop();
         }
     }
 
     /**
+     * Notes that sending on a path failed, which makes it suspect at once.
+     */
+    private void sendFailed(long pathId) {
+        consecutiveProbeTimeouts.put(pathId, SUSPECT_AFTER_PROBE_TIMEOUTS);
+        probeTimeout(pathId);
+    }
+
+    /**
      * Notes that a path (0 for the initial path) got an acknowledgement, so it is not (or no longer) suspect.
      */
     public void pathAcknowledged(long pathId) {
+        consecutiveProbeTimeouts.remove(pathId);
         if (pathId == 0) {
             if (initialPathSuspect) {
                 initialPathSuspect = false;
@@ -682,7 +694,7 @@ public class SenderImpl implements Sender, CongestionControlEventListener, Hands
                 throw e;
             }
             log.warn("Sending on path " + pathId + " to " + destination + " failed: " + e);
-            probeTimeout(pathId);
+            sendFailed(pathId);
         }
     }
 
@@ -759,7 +771,7 @@ public class SenderImpl implements Sender, CongestionControlEventListener, Hands
                 throw e;
             }
             log.warn("Sending on path " + pathId + " failed: " + e);
-            probeTimeout(pathId);
+            sendFailed(pathId);
             timeSent = clock.instant();
         }
         registerSent(assembledDatagram.getItems(), timeSent, size);
@@ -987,7 +999,9 @@ public class SenderImpl implements Sender, CongestionControlEventListener, Hands
                 + " appIdle=" + sendRequestQueue[EncryptionLevel.App.ordinal()].isIdle()
                 + " ackElicitingInFlight=" + recoveryManager.waitingForAcknowledgement()
                 + " deferWakeUp=" + deferWakeUp + " ackHeld=" + ackHeld + " paths=" + paths.size()
-                + " suspect=" + initialPathSuspect + " maxPacketSize=" + maxPacketSize;
+                + " suspect=" + initialPathSuspect + " maxPacketSize=" + maxPacketSize + " rtt=" + rttEstimater.getSmoothedRtt()
+                + paths.values().stream().map(p -> " path" + p.getId() + "[" + p.getState() + ",rtt=" + p.getRttEstimator().getSmoothedRtt()
+                        + ",suspect=" + p.isSuspect() + ",backup=" + p.peerPrefersBackup() + "]").collect(Collectors.joining());
     }
 
     @Override

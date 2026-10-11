@@ -98,6 +98,15 @@ public class RttEstimator implements RttProvider {
         }
     }
 
+    /**
+     * Replaces the initial RTT, used until the first sample, with a measured one (e.g. from path validation).
+     */
+    public void resetInitialRtt(int rtt) {
+        if (smoothedRtt == NOT_SET) {
+            initialRtt = rtt;
+        }
+    }
+
     @Override
     public int getSmoothedRtt() {
         if (smoothedRtt == NOT_SET) {
