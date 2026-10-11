@@ -47,8 +47,10 @@ public class AbstractCongestionController implements CongestionController {
         if (! sentPacket.isAckOnly()) {  // Redundant: caller has checked in-flight, which implies not ack-only
             bytesInFlight += sentPacket.getSize();
             eventListener.bytesInFlightIncreased(bytesInFlight);
-            log.debug("Bytes in flight increased to " + bytesInFlight);
-            if (bytesInFlight > congestionWindow) {
+            if (log.logDebug()) {
+                log.debug("Bytes in flight increased to " + bytesInFlight);
+            }
+            if (bytesInFlight > congestionWindow && log.logCongestionControl()) {
                 log.cc("Bytes in flight exceeds congestion window: " + bytesInFlight + " > " + congestionWindow);
             }
         }
@@ -66,7 +68,9 @@ public class AbstractCongestionController implements CongestionController {
             eventListener.bytesInFlightDecreased(bytesInFlight);
             checkBytesInFlight();
             if (log.logDebug()) {
-                log.debug("Bytes in flight decreased to " + bytesInFlight + " (" + acknowlegdedPackets.size() + " packets acked)");
+                if (log.logDebug()) {
+                    log.debug("Bytes in flight decreased to " + bytesInFlight + " (" + acknowlegdedPackets.size() + " packets acked)");
+                }
             }
         }
     }
@@ -82,7 +86,9 @@ public class AbstractCongestionController implements CongestionController {
 
         if (lostBytes > 0) {
             checkBytesInFlight();
-            log.debug("Bytes in flight decreased to " + bytesInFlight + " (" + lostPackets.size() + " packets lost)");
+            if (log.logDebug()) {
+                log.debug("Bytes in flight decreased to " + bytesInFlight + " (" + lostPackets.size() + " packets lost)");
+            }
         }
     }
 
@@ -97,7 +103,9 @@ public class AbstractCongestionController implements CongestionController {
 
         if (discardedBytes > 0) {
             checkBytesInFlight();
-            log.debug("Bytes in flight decreased with " + discardedBytes + " to " + bytesInFlight + " (" + discardedPackets.size() + " packets RESET)");
+            if (log.logDebug()) {
+                log.debug("Bytes in flight decreased with " + discardedBytes + " to " + bytesInFlight + " (" + discardedPackets.size() + " packets RESET)");
+            }
         }
     }
 

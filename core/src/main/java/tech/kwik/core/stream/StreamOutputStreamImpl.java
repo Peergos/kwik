@@ -177,7 +177,9 @@ class StreamOutputStreamImpl extends StreamOutputStream implements FlowControlUp
         StreamFrame streamFrame = null;
         if (retransmitBuffer.hasDataToRetransmit()) {
             streamFrame = retransmitBuffer.getFrameToRetransmit(maxFrameSize);
-            quicStream.log.recovery("Retransmitted lost stream frame " + streamFrame);
+            if (quicStream.log.logRecovery()) {
+                quicStream.log.recovery("Retransmitted lost stream frame " + streamFrame);
+            }
             assert (streamFrame != null);
         }
         else if (sendBuffer.hasData()) {
@@ -225,8 +227,9 @@ class StreamOutputStreamImpl extends StreamOutputStream implements FlowControlUp
             }
         }
         if (streamFrame != null && (sendBuffer.hasData() || retransmitBuffer.hasDataToRetransmit())) {
-            // There is more to send, so queue a new send request.
-            scheduleSendStreamFrameRequest(true);
+            // There is more to send, so queue a new send request. No flush: this runs on the sender thread, which
+            // keeps assembling packets while there are requests.
+            scheduleSendStreamFrameRequest(false);
         }
 
         return streamFrame;

@@ -87,7 +87,9 @@ public class NewRenoCongestionController extends AbstractCongestionController im
                 }
             });
             if (congestionWindow != previousCwnd) {
-                log.cc("Cwnd(+): " + congestionWindow + " (" + getMode() + "); inflight: " + bytesInFlightBefore);
+                if (log.logCongestionControl()) {
+                    log.cc("Cwnd(+): " + congestionWindow + " (" + getMode() + "); inflight: " + bytesInFlightBefore);
+                }
             }
         }
 //        log.cc("CC status: bytes in flight:" + bytesInFlight + " cwnd:" + congestionWindow
@@ -113,7 +115,9 @@ public class NewRenoCongestionController extends AbstractCongestionController im
             if (congestionWindow < kMinimumWindow) {
                 congestionWindow = kMinimumWindow;
             }
-            log.cc("Cwnd(-): " + congestionWindow + "; inflight: " + bytesInFlight);
+            if (log.logCongestionControl()) {
+                log.cc("Cwnd(-): " + congestionWindow + "; inflight: " + bytesInFlight);
+            }
             slowStartThreshold = congestionWindow;
         }
     }

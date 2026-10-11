@@ -88,6 +88,11 @@ public abstract class BaseLogger implements Logger {
     }
 
     @Override
+    public boolean logCongestionControl() {
+        return logCongestionControl;
+    }
+
+    @Override
     public void logDecrypted(boolean enabled) {
         logDecrypted = enabled;
     }

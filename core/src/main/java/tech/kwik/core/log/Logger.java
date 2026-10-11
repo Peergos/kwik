@@ -44,6 +44,10 @@ public interface Logger {
 
     void logRaw(boolean enabled);
 
+    default boolean logCongestionControl() {
+        return true;
+    }
+
     default boolean logPackets() {
         return true;
     }

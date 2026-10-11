@@ -64,11 +64,6 @@ public class NullLogger implements Logger {
     }
 
     @Override
-    public boolean logRecovery() {
-        return false;
-    }
-
-    @Override
     public void logCongestionControl(boolean enabled) {
     }
 
@@ -234,6 +229,16 @@ public class NullLogger implements Logger {
 
     @Override
     public boolean logPackets() {
+        return false;
+    }
+
+    @Override
+    public boolean logRecovery() {
+        return false;
+    }
+
+    @Override
+    public boolean logCongestionControl() {
         return false;
     }
 

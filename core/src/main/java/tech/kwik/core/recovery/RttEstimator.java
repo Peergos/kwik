@@ -93,7 +93,9 @@ public class RttEstimator implements RttProvider {
             smoothedRtt = (7 * smoothedRtt + rttSample + 4) / 8;  // Add 4 to round to nearest integer
         }
 
-        log.debug("RTT: " + previousSmoothed + " + " + rttSample + " -> " + smoothedRtt);
+        if (log.logDebug()) {
+            log.debug("RTT: " + previousSmoothed + " + " + rttSample + " -> " + smoothedRtt);
+        }
     }
 
     @Override

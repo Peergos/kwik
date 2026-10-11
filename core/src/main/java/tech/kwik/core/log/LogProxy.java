@@ -94,11 +94,6 @@ public class LogProxy implements Logger {
     }
 
     @Override
-    public boolean logRecovery() {
-        return proxiedLogger.logRecovery();
-    }
-
-    @Override
     public boolean logRaw() {
         return proxiedLogger.logRaw();
     }
@@ -116,6 +111,16 @@ public class LogProxy implements Logger {
     @Override
     public boolean logPackets() {
         return proxiedLogger.logPackets();
+    }
+
+    @Override
+    public boolean logRecovery() {
+        return proxiedLogger.logRecovery();
+    }
+
+    @Override
+    public boolean logCongestionControl() {
+        return proxiedLogger.logCongestionControl();
     }
 
     @Override

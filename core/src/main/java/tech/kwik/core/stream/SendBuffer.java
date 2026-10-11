@@ -25,7 +25,7 @@ import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.util.Arrays;
 import java.util.Queue;
-import java.util.concurrent.ConcurrentLinkedDeque;
+import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.locks.Condition;
 import java.util.concurrent.locks.ReentrantLock;
@@ -49,7 +49,7 @@ public class SendBuffer {
 
 
     public SendBuffer(Integer sendBufferSize) {
-        sendQueue = new ConcurrentLinkedDeque<>();
+        sendQueue = new ConcurrentLinkedQueue<>();
         if (sendBufferSize != null && sendBufferSize > 0) {
             maxBufferSize = sendBufferSize;
         }
@@ -105,8 +105,8 @@ public class SendBuffer {
         int nrOfBytes = 0;
         byte[] dataToSend = new byte[maxBytesToSend];
         boolean finalFrame = false;
-        while (nrOfBytes < maxBytesToSend && !sendQueue.isEmpty()) {
-            ByteBuffer buffer = sendQueue.peek();
+        ByteBuffer buffer;
+        while (nrOfBytes < maxBytesToSend && (buffer = sendQueue.peek()) != null && buffer != END_OF_STREAM_MARKER) {
             int position = nrOfBytes;
             if (buffer.remaining() <= maxBytesToSend - nrOfBytes) {
                 // All bytes remaining in buffer will fit in stream frame
@@ -121,7 +121,7 @@ public class SendBuffer {
             }
         }
 
-        if (!sendQueue.isEmpty() && sendQueue.peek() == END_OF_STREAM_MARKER) {
+        if (sendQueue.peek() == END_OF_STREAM_MARKER) {
             finalFrame = true;
             sendQueue.poll();
         }
