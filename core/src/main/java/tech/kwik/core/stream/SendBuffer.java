@@ -102,6 +102,21 @@ public class SendBuffer {
     }
 
     public StreamFrame getStreamFrame(Version quicVersion, int streamId, long currentOffset, int maxBytesToSend) {
+        ByteBuffer first = sendQueue.peek();
+        if (first != null && first != END_OF_STREAM_MARKER && first.remaining() >= maxBytesToSend && maxBytesToSend > 0) {
+            // The frame comes from one buffered chunk, which never changes once written: reference it, no copy.
+            int start = first.arrayOffset() + first.position();
+            first.position(first.position() + maxBytesToSend);
+            if (!first.hasRemaining()) {
+                sendQueue.poll();
+            }
+            boolean fin = sendQueue.peek() == END_OF_STREAM_MARKER;
+            if (fin) {
+                sendQueue.poll();
+            }
+            dataTaken(maxBytesToSend);
+            return StreamFrame.referencing(quicVersion, streamId, currentOffset, first.array(), start, maxBytesToSend, fin);
+        }
         int nrOfBytes = 0;
         byte[] dataToSend = new byte[maxBytesToSend];
         boolean finalFrame = false;
@@ -130,7 +145,17 @@ public class SendBuffer {
             return null;
         }
 
-        int buffered = bufferedBytes.addAndGet(-1 * nrOfBytes);
+        dataTaken(nrOfBytes);
+        if (nrOfBytes < maxBytesToSend) {
+            // This can happen when not enough data is buffer to fill a stream frame, or length field is 1 byte (instead of 2 that was counted for)
+            dataToSend = Arrays.copyOfRange(dataToSend, 0, nrOfBytes);
+        }
+        StreamFrame streamFrame = new StreamFrame(quicVersion, streamId, currentOffset, dataToSend, finalFrame);
+        return streamFrame;
+    }
+
+    private void dataTaken(int bytes) {
+        int buffered = bufferedBytes.addAndGet(-1 * bytes);
         if (blockingWriterThread != null && maxBufferSize - buffered >= awaitedSpace) {
             bufferLock.lock();
             try {
@@ -140,12 +165,6 @@ public class SendBuffer {
                 bufferLock.unlock();
             }
         }
-        if (nrOfBytes < maxBytesToSend) {
-            // This can happen when not enough data is buffer to fill a stream frame, or length field is 1 byte (instead of 2 that was counted for)
-            dataToSend = Arrays.copyOfRange(dataToSend, 0, nrOfBytes);
-        }
-        StreamFrame streamFrame = new StreamFrame(quicVersion, streamId, currentOffset, dataToSend, finalFrame);
-        return streamFrame;
     }
 
     public int getAvailableBytes() {

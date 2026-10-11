@@ -86,6 +86,22 @@ public class StreamFrame extends QuicFrame implements StreamElement {
                 + length;
     }
 
+    /**
+     * A stream frame that uses the given data without copying it; the caller guarantees the range never changes.
+     */
+    public static StreamFrame referencing(Version quicVersion, int streamId, long streamOffset, byte[] data, int dataOffset, int dataLength, boolean fin) {
+        StreamFrame frame = new StreamFrame(quicVersion, streamId, streamOffset, new byte[0], 0, 0, fin);
+        frame.streamData = data;
+        frame.streamDataOffset = dataOffset;
+        frame.length = dataLength;
+        frame.frameLength = 1
+                + VariableLengthInteger.bytesNeeded(streamId)
+                + VariableLengthInteger.bytesNeeded(streamOffset)
+                + VariableLengthInteger.bytesNeeded(dataLength)
+                + dataLength;
+        return frame;
+    }
+
     @Override
     public void serialize(ByteBuffer buffer) {
         if (frameLength > buffer.remaining()) {
