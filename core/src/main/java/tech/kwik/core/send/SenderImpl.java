@@ -132,7 +132,7 @@ public class SenderImpl implements Sender, CongestionControlEventListener, Hands
     private static final int MAX_BATCH_BYTES = 65000;
     // While received datagrams are queued, the sender is woken once per this many datagrams instead of for each, and
     // immediate acks are held until then, so acks cover more packets. Only accessed by the receiver thread.
-    private static final int MAX_DEFERRED_DATAGRAMS = 16;
+    private static final int MAX_DEFERRED_DATAGRAMS = 64;
     private boolean deferWakeUp;
     private int deferredDatagrams;
     private boolean ackHeld;
