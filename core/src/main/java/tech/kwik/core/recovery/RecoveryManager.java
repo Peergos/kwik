@@ -480,9 +480,10 @@ public class RecoveryManager implements FrameReceivedListener<AckFrame>, Handsha
                 lossDetectionFuture.cancel(false);
                 timerExpiration = scheduledTime;
                 pendingTimeout = scheduledTime;
-                long delay = Duration.between(clock.instant(), scheduledTime).toMillis();
+                // In nanoseconds: in milliseconds it would run up to a millisecond early, before the timeout is due
+                long delay = Duration.between(clock.instant(), scheduledTime).toNanos();
                 // Delay can be 0 or negative, but that's no problem for ScheduledExecutorService: "Zero and negative delays are also allowed, and are treated as requests for immediate execution."
-                lossDetectionFuture = scheduler.schedule(this::runLossDetectionTimeout, delay, TimeUnit.MILLISECONDS);
+                lossDetectionFuture = scheduler.schedule(this::runLossDetectionTimeout, delay, TimeUnit.NANOSECONDS);
             }
         }
         catch (RejectedExecutionException taskRejected) {

@@ -24,6 +24,7 @@ import tech.kwik.core.log.Logger;
 import tech.kwik.core.packet.QuicPacket;
 
 import java.time.Clock;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
@@ -93,7 +94,21 @@ public class IdleTimer {
         else {
             timerTask.cancel(true);
         }
-        timerTask = timer.scheduleAtFixedRate(() -> checkIdle(), timerResolution, timerResolution, TimeUnit.MILLISECONDS);
+        scheduleCheck();
+    }
+
+    /**
+     * A one-shot check for when the connection could first be idle, rather than a check every timerResolution: on a
+     * shared event loop with many connections, frequent timers are not free (Netty's NIO loop polls without blocking
+     * in the last half millisecond before each one).
+     */
+    private void scheduleCheck() {
+        Instant now = clock.instant();
+        long sinceLastAction = Duration.between(lastActionTime, now).toMillis();
+        long idleAfter = Long.max(timeout, 3L * ptoSupplier.getAsInt());
+        // One millisecond more, as checkIdle requires the timeout to have passed
+        long delay = Long.max(timerResolution, idleAfter - sinceLastAction + 1);
+        timerTask = timer.schedule(this::checkIdle, delay, TimeUnit.MILLISECONDS);
     }
 
     long getIdleTimeout() {
@@ -119,8 +134,11 @@ public class IdleTimer {
                 if (lastActionTime.plusMillis(3L * currentPto).isBefore(now)) {
                     timer.shutdown();
                     connection.silentlyCloseConnection(timeout + currentPto);
+                    return;
                 }
-            }}
+            }
+            scheduleCheck();
+        }
     }
 
     public void packetProcessed() {

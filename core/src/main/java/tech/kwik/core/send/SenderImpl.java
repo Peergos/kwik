@@ -844,7 +844,10 @@ public class SenderImpl implements Sender, CongestionControlEventListener, Hands
             }
         }
         if (nextDelayedSendTime.isPresent()) {
-            long delay = max(Duration.between(clock.instant(), nextDelayedSendTime.get()).toMillis(), 0);
+            // Rounded up: truncated, a send due in under a millisecond would look due now, and the sender would spin
+            // until it is
+            long delayNanos = Duration.between(clock.instant(), nextDelayedSendTime.get()).toNanos();
+            long delay = delayNanos <= 0? 0: (delayNanos + 999_999) / 1_000_000;
             if (delay > 0) {
                 subsequentZeroDelays.set(0);
                 lastDelayWasZero = false;
