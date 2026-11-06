@@ -99,6 +99,7 @@ public class ServerConnectionFactory {
     }
 
     public ServerConnectionProxy createServerConnectionProxy(ServerConnectionImpl connection, List<InitialPacket> initialPackets, ByteBuffer data, PacketMetaData metaData) {
-        return new ServerConnectionThread(connection, initialPackets, data, metaData, log);
+        return new ServerConnectionThread(connection, initialPackets, data, metaData,
+                connectionExecutor.isShared()? connectionExecutor.sharedScheduler(): null, log);
     }
 }

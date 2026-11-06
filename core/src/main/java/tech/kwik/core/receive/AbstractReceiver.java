@@ -49,6 +49,7 @@ public abstract class AbstractReceiver implements Receiver {
     protected final BlockingQueue<RawPacket> receivedPacketsQueue;
     protected volatile boolean isClosing;
     private Consumer<RawPacket> sink;
+    private volatile Runnable packetListener;
 
     public AbstractReceiver(Logger log, Predicate<DatagramPacket> packetFilter, Consumer<Throwable> abortCallback) {
         this.log = log;
@@ -63,6 +64,19 @@ public abstract class AbstractReceiver implements Receiver {
      */
     protected void setSink(Consumer<RawPacket> sink) {
         this.sink = sink;
+    }
+
+    @Override
+    public void setPacketListener(Runnable listener) {
+        this.packetListener = listener;
+    }
+
+    protected void queue(RawPacket packet) {
+        receivedPacketsQueue.add(packet);
+        Runnable listener = packetListener;
+        if (listener != null) {
+            listener.run();
+        }
     }
 
     @Override
@@ -110,7 +124,7 @@ public abstract class AbstractReceiver implements Receiver {
                             sink.accept(rawPacket);
                         }
                         else {
-                            receivedPacketsQueue.add(rawPacket);
+                            queue(rawPacket);
                         }
                     }
                 }

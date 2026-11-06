@@ -37,7 +37,7 @@ public class QueueReceiver extends AbstractReceiver {
 
     public void deliver(RawPacket packet) {
         if (!isClosing && filter.test(packet)) {
-            receivedPacketsQueue.add(packet);
+            queue(packet);
         }
     }
 

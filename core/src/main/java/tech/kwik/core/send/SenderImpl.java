@@ -68,6 +68,10 @@ import java.util.HashSet;
 import java.util.Set;
 import java.util.Optional;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.ScheduledExecutorService;
 import java.util.function.Consumer;
 import java.util.function.Function;
 import java.util.stream.Collectors;
@@ -109,7 +113,13 @@ public class SenderImpl implements Sender, CongestionControlEventListener, Hands
     private final GlobalAckGenerator globalAckGenerator;
     private final RecoveryManager recoveryManager;
     private final IdleTimer idleTimer;
+    // Null when the sender runs on a shared executor instead (loop is set then)
     private final Thread senderThread;
+    private final ScheduledExecutorService loop;
+    private final AtomicBoolean sendQueued = new AtomicBoolean();
+    // Loop only
+    private ScheduledFuture<?> sendTimer;
+    private long sendTimerDeadline;
     private final boolean[] discardedSpaces = new boolean[PnSpace.values().length];
     private ConnectionSecrets connectionSecrets;
     private final Object condition = new Object();
@@ -127,6 +137,8 @@ public class SenderImpl implements Sender, CongestionControlEventListener, Hands
     private AtomicInteger subsequentZeroDelays = new AtomicInteger();
     private volatile boolean lastDelayWasZero = false;
     private volatile int antiAmplificationLimit = -1;
+    // Set when the last sendIfAny could not send because of the anti-amplification limit
+    private volatile boolean blockedByAntiAmplification;
     private volatile Runnable shutdownHook;
     private volatile Instant lastestAckElicitingTime;
     private final byte[] paddingPattern;
@@ -189,8 +201,16 @@ public class SenderImpl implements Sender, CongestionControlEventListener, Hands
 
         idleTimer = connection.getIdleTimer();
 
-        senderThread = new Thread(() -> sendLoop(), "sender" + (!id.isBlank()? "-" + id: ""));
-        senderThread.setDaemon(true);
+        ConnectionExecutor connectionExecutor = getConnectionExecutor();
+        if (connectionExecutor.isShared()) {
+            loop = connectionExecutor.sharedScheduler();
+            senderThread = null;
+        }
+        else {
+            loop = null;
+            senderThread = new Thread(() -> sendLoop(), "sender" + (!id.isBlank()? "-" + id: ""));
+            senderThread.setDaemon(true);
+        }
 
         String paddingPatternProp = System.getProperty("tech.kwik.padding-pattern");
         if (paddingPatternProp != null && !paddingPatternProp.isEmpty()) {
@@ -206,7 +226,14 @@ public class SenderImpl implements Sender, CongestionControlEventListener, Hands
 
     public void start(ConnectionSecrets secrets) {
         connectionSecrets = secrets;
-        senderThread.start();
+        if (loop == null) {
+            senderThread.start();
+        }
+        else {
+            running = true;
+            // Frames may have been queued before the start
+            wakeUpSenderLoop();
+        }
     }
 
     @Override
@@ -444,7 +471,12 @@ public class SenderImpl implements Sender, CongestionControlEventListener, Hands
 
         shutdownHook = postShutdownAction;
         stopping = true;
-        senderThread.interrupt();
+        if (loop == null) {
+            senderThread.interrupt();
+        }
+        else {
+            wakeUpSenderLoop();
+        }
     }
 
     ConnectionExecutor getConnectionExecutor() {
@@ -487,7 +519,7 @@ public class SenderImpl implements Sender, CongestionControlEventListener, Hands
         synchronized (condition) {
             try {
                 if (! signalled) {
-                    long timeout = determineMaximumWaitTime();
+                    long timeout = nextWaitTime();
                     if (timeout > 0) {
                         condition.wait(timeout);
                     }
@@ -611,6 +643,7 @@ public class SenderImpl implements Sender, CongestionControlEventListener, Hands
     }
 
     void sendIfAny() throws IOException {
+        blockedByAntiAmplification = false;
         if (!probeTimeouts.isEmpty()) {
             handleProbeTimeouts();
         }
@@ -706,10 +739,83 @@ public class SenderImpl implements Sender, CongestionControlEventListener, Hands
     }
 
     private void wakeUpSenderLoop() {
-        synchronized (condition) {
-            signalled = true;
-            condition.notify();
+        if (loop == null) {
+            synchronized (condition) {
+                signalled = true;
+                condition.notify();
+            }
         }
+        else if (sendQueued.compareAndSet(false, true)) {
+            loop.execute(this::runOnLoop);
+        }
+    }
+
+    /**
+     * One iteration of the send loop, run as a task on the shared executor. Instead of waiting, it leaves a timer for
+     * the time the thread would have waited until.
+     */
+    private void runOnLoop() {
+        sendQueued.set(false);
+        if (! running) {
+            return;
+        }
+        try {
+            // As in doLoopIteration: decide before composing packets, so nothing queued after this is lost
+            if (stopping) {
+                running = false;
+            }
+            sendIfAny();
+        }
+        catch (Throwable fatalError) {
+            if (running) {
+                running = false;
+                log.error("Sender aborted with exception", fatalError);
+                connection.abortConnection(fatalError);
+            }
+            else {
+                log.warn("Ignoring " + fatalError + " because sender is shutting down.");
+            }
+        }
+        if (! running) {
+            loop.shutdown();
+            if (shutdownHook != null) {
+                shutdownHook.run();
+            }
+            return;
+        }
+        scheduleSendTimer(nextWaitTime());
+    }
+
+    /**
+     * Like determineMaximumWaitTime, except that what is due but blocked by the anti-amplification limit does not count:
+     * only data received from the peer can lift that limit, and receiving it wakes the sender (setAntiAmplificationLimit),
+     * so retrying at once would only busy-wait.
+     */
+    private long nextWaitTime() {
+        long timeout = determineMaximumWaitTime();
+        if (timeout == 0 && blockedByAntiAmplification) {
+            subsequentZeroDelays.set(0);
+            lastDelayWasZero = false;
+            return 5000;
+        }
+        return timeout;
+    }
+
+    private void scheduleSendTimer(long delayMillis) {
+        if (delayMillis <= 0) {
+            wakeUpSenderLoop();
+            return;
+        }
+        long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(delayMillis);
+        // A timer that fires early only costs an iteration that sends nothing, so keep one that is due sooner
+        if (sendTimer != null && ! sendTimer.isDone()) {
+            if (sendTimerDeadline - deadline <= 0) {
+                return;
+            }
+            sendTimer.cancel(false);
+        }
+        sendTimerDeadline = deadline;
+        sendTimer = loop.schedule(this::wakeUpSenderLoop, delayMillis, TimeUnit.MILLISECONDS);
     }
 
     /**
@@ -952,6 +1058,7 @@ public class SenderImpl implements Sender, CongestionControlEventListener, Hands
             }
             else {
                 log.warn("Cannot send; anti-amplification limit is reached");
+                blockedByAntiAmplification = true;
                 return new AssembledDatagram(Collections.emptyList());
             }
         }
@@ -1035,11 +1142,18 @@ public class SenderImpl implements Sender, CongestionControlEventListener, Hands
     }
 
     public void setAntiAmplificationLimit(int antiAmplificationLimit) {
+        boolean increased = antiAmplificationLimit > this.antiAmplificationLimit;
         this.antiAmplificationLimit = antiAmplificationLimit;
+        if (increased && blockedByAntiAmplification) {
+            wakeUpSenderLoop();
+        }
     }
 
     public void unsetAntiAmplificationLimit() {
         antiAmplificationLimit = -1;
+        if (blockedByAntiAmplification) {
+            wakeUpSenderLoop();
+        }
     }
 
     public void enableAllLevels() {

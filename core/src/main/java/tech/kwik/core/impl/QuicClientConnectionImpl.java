@@ -71,6 +71,7 @@ import javax.net.ssl.X509ExtendedKeyManager;
 import javax.net.ssl.X509TrustManager;
 import java.io.IOException;
 import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.net.*;
 import java.nio.ByteBuffer;
 import java.nio.file.Path;
@@ -170,6 +171,13 @@ public class QuicClientConnectionImpl extends QuicConnectionImpl implements Quic
     private final GlobalAckGenerator ackGenerator;
     private Integer clientHelloEnlargement;
     private volatile Thread receiverThread;
+    // Set instead of receiverThread when the connection runs on a shared executor
+    private volatile ScheduledExecutorService receiveLoop;
+    private final AtomicBoolean receiveDrainQueued = new AtomicBoolean();
+    private volatile boolean receiveStopped;
+    // Receiver thread or receive loop only
+    private DatagramFilter receiveChain;
+    private int receivedPacketCounter;
     private volatile String handshakeError;
     private volatile ClientHello originalClientHello;
 
@@ -241,11 +249,13 @@ public class QuicClientConnectionImpl extends QuicConnectionImpl implements Quic
             @Override
             public void send(ClientHello clientHello) {
                 CryptoStream cryptoStream = getCryptoStream(Initial);
-                cryptoStream.write(clientHello, true);
+                // Before writing: the whole handshake can complete on the receiving thread before write returns, and
+                // setting the state after would overwrite Connected
                 connectionState = Status.Handshaking;
                 connectionSecrets.setClientRandom(clientHello.getClientRandom());
-                log.sentPacketInfo(cryptoStream.toStringSent());
                 originalClientHello = clientHello;
+                cryptoStream.write(clientHello, true);
+                log.sentPacketInfo(cryptoStream.toStringSent());
             }
 
             @Override
@@ -515,21 +525,37 @@ public class QuicClientConnectionImpl extends QuicConnectionImpl implements Quic
     }
 
     private void startReceiverLoop() {
-        receiverThread = new Thread(this::receiveAndProcessPackets, "receiver-loop");
-        receiverThread.setDaemon(true);
-        receiverThread.start();
+        createReceiveChain();
+        if (getConnectionExecutor().isShared()) {
+            receiveLoop = getConnectionExecutor().sharedScheduler();
+            receiver.setPacketListener(() -> {
+                if (receiveDrainQueued.compareAndSet(false, true)) {
+                    receiveLoop.execute(this::drainReceived);
+                }
+            });
+            // Packets may have arrived before the listener was set
+            if (receiver.hasMore() && receiveDrainQueued.compareAndSet(false, true)) {
+                receiveLoop.execute(this::drainReceived);
+            }
+        }
+        else {
+            receiverThread = new Thread(this::receiveAndProcessPackets, "receiver-loop");
+            receiverThread.setDaemon(true);
+            receiverThread.start();
+        }
     }
 
-    private void receiveAndProcessPackets() {
-        Thread currentThread = Thread.currentThread();
-        int receivedPacketCounter = 0;
+    private void createReceiveChain() {
         parser = new ClientRolePacketParser(connectionSecrets, quicVersion, connectionIdManager.getConnectionIdLength(),
                 connectionIdManager.getOriginalDestinationConnectionId(),
                 createProcessorChain(), this::handleUnprotectPacketFailure, log);
         parser.setPathResolver(pathResolver());
-        DatagramFilter datagramProcessingChain = new DatagramPostProcessingFilter(this::datagramProcessed,
+        receiveChain = new DatagramPostProcessingFilter(this::datagramProcessed,
                 new DatagramParserFilter(parser));
+    }
 
+    private void receiveAndProcessPackets() {
+        Thread currentThread = Thread.currentThread();
         try {
             while (! currentThread.isInterrupted()) {
                 if (!receiver.hasMore()) {
@@ -538,38 +564,79 @@ public class QuicClientConnectionImpl extends QuicConnectionImpl implements Quic
                 }
                 RawPacket rawPacket = receiver.get(15);
                 if (rawPacket != null) {
-                    if (connectionProperties.getEnforceMaxUdpPayloadSize() && rawPacket.getLength() > connectionProperties.getMaxUdpPayloadSize()) {
-                        log.error("Dropping UDP packet with size " + rawPacket.getLength() + ", which is larger than the maximum allowed UDP payload size of " + connectionProperties.getMaxUdpPayloadSize());
-                        continue;
-                    }
-                    ++receivedPacketCounter;
-                    if (log.logRaw()) {
-                        log.raw("Start processing packet " + receivedPacketCounter + " (" + rawPacket.getLength() + " bytes)", rawPacket.getData(), 0, rawPacket.getLength());
-                    }
-                    if (log.logDebug()) {
-                        Duration processDelay = Duration.between(rawPacket.getTimeReceived(), Instant.now());
-                        log.debug("Processing delay for packet #" + receivedPacketCounter + ": " + processDelay.toMillis() + " ms");
-                    }
-
-                    PacketMetaData metaData = new PacketMetaData(rawPacket.getTimeReceived(), rawPacket.getPeerAddress(), receivedPacketCounter, rawPacket.getData().limit());
-                    sender.moreDatagramsQueued(rawPacket.isMore() || receiver.hasMore());
-                    datagramProcessingChain.processDatagram(rawPacket.getData(), metaData);
-
-                    sender.datagramProcessed(receiver.hasMore());
+                    processReceived(rawPacket);
                 }
             }
-        }
-        catch (ProtocolError e) {
-            connectionError(new TransportError(PROTOCOL_VIOLATION));
-        }
-        catch (TransportError e) {
-            connectionError(e);
         }
         catch (InterruptedException e) {
             log.debug("Terminating receiver loop because of interrupt");
         }
-        catch (RuntimeException error) {
+        catch (Exception error) {
+            receiveFailed(error);
+        }
+    }
+
+    /**
+     * Processes all packets queued so far, as a task on the shared executor; the counterpart of one pass through the
+     * receiver thread's loop until the queue is empty.
+     */
+    private void drainReceived() {
+        receiveDrainQueued.set(false);
+        if (receiveStopped) {
+            return;
+        }
+        try {
+            RawPacket rawPacket;
+            while (! receiveStopped && (rawPacket = receiver.get(0)) != null) {
+                processReceived(rawPacket);
+            }
+            if (! receiveStopped) {
+                endReceiveBatch();
+            }
+        }
+        catch (InterruptedException e) {
+            receiveStopped = true;
+        }
+        catch (Exception error) {
+            receiveStopped = true;
+            receiveFailed(error);
+        }
+    }
+
+    private void processReceived(RawPacket rawPacket) throws TransportError, ProtocolError {
+        if (connectionProperties.getEnforceMaxUdpPayloadSize() && rawPacket.getLength() > connectionProperties.getMaxUdpPayloadSize()) {
+            log.error("Dropping UDP packet with size " + rawPacket.getLength() + ", which is larger than the maximum allowed UDP payload size of " + connectionProperties.getMaxUdpPayloadSize());
+            return;
+        }
+        ++receivedPacketCounter;
+        if (log.logRaw()) {
+            log.raw("Start processing packet " + receivedPacketCounter + " (" + rawPacket.getLength() + " bytes)", rawPacket.getData(), 0, rawPacket.getLength());
+        }
+        if (log.logDebug()) {
+            Duration processDelay = Duration.between(rawPacket.getTimeReceived(), Instant.now());
+            log.debug("Processing delay for packet #" + receivedPacketCounter + ": " + processDelay.toMillis() + " ms");
+        }
+
+        PacketMetaData metaData = new PacketMetaData(rawPacket.getTimeReceived(), rawPacket.getPeerAddress(), receivedPacketCounter, rawPacket.getData().limit());
+        sender.moreDatagramsQueued(rawPacket.isMore() || receiver.hasMore());
+        receiveChain.processDatagram(rawPacket.getData(), metaData);
+
+        sender.datagramProcessed(receiver.hasMore());
+    }
+
+    private void receiveFailed(Exception error) {
+        if (error instanceof ProtocolError) {
+            connectionError(new TransportError(PROTOCOL_VIOLATION));
+        }
+        else if (error instanceof TransportError) {
+            connectionError((TransportError) error);
+        }
+        else if (error instanceof RuntimeException) {
             log.debug("Terminating receiver loop because of error", error);
+            abortConnection(error);
+        }
+        else {
+            log.error("Unexpected error while processing received packets", error);
             abortConnection(error);
         }
     }
@@ -903,6 +970,10 @@ public class QuicClientConnectionImpl extends QuicConnectionImpl implements Quic
     protected void preTerminateHook() {
         handshakeFinishedCondition.countDown();
         receiver.shutdown();
+        receiveStopped = true;
+        if (receiveLoop != null) {
+            receiveLoop.shutdown();
+        }
         if (receiverThread != null) {
             receiverThread.interrupt();
         }

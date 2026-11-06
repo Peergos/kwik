@@ -32,4 +32,10 @@ public interface Receiver {
     RawPacket get(int timeout) throws InterruptedException;
 
     boolean hasMore();
+
+    /**
+     * Called (on the thread that received it) each time a packet is queued, so a connection without a thread of its
+     * own can schedule processing. Not called for packets handed to a sink.
+     */
+    void setPacketListener(Runnable listener);
 }

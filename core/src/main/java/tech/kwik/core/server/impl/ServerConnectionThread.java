@@ -28,7 +28,9 @@ import java.nio.ByteBuffer;
 import java.time.Instant;
 import java.util.List;
 import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.ExecutorService;
 import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Consumer;
 
 /**
@@ -36,11 +38,21 @@ import java.util.function.Consumer;
  * This implementation creates a new thread for each connection, so the methods that execute as part of processing
  * received datagrams can use thread-confinement strategy for concurrency control.
  */
+/**
+ * Processes the datagrams received for one server connection: on a thread of its own, or, when given an executor, as
+ * tasks on that executor (one per batch of queued datagrams), so the connection needs no thread.
+ */
 public class ServerConnectionThread implements ServerConnectionProxy {
 
     private final ServerConnectionImpl serverConnection;
     private final BlockingQueue<ReceivedDatagram> queue;
+    // Exactly one of these is set
     private final Thread connectionReceiverThread;
+    private final ExecutorService executor;
+    private final AtomicBoolean drainQueued = new AtomicBoolean();
+    private volatile boolean stopped;
+    // Processing thread or executor only
+    private DatagramFilter datagramProcessingChain;
     private final List<InitialPacket> firstInitialPackets;
     private final ByteBuffer data;
     private final PacketMetaData firstInitialPacketMetaData;
@@ -48,6 +60,14 @@ public class ServerConnectionThread implements ServerConnectionProxy {
 
 
     public ServerConnectionThread(ServerConnectionImpl serverConnection, List<InitialPacket> firstInitialPackets, ByteBuffer remainingDatagramData, PacketMetaData initialPacketMetaData, Logger log) {
+        this(serverConnection, firstInitialPackets, remainingDatagramData, initialPacketMetaData, null, log);
+    }
+
+    /**
+     * @param executor  the executor to process datagrams on, or null for a thread of its own
+     */
+    public ServerConnectionThread(ServerConnectionImpl serverConnection, List<InitialPacket> firstInitialPackets, ByteBuffer remainingDatagramData,
+                                  PacketMetaData initialPacketMetaData, ExecutorService executor, Logger log) {
         this.serverConnection = serverConnection;
         this.firstInitialPackets = firstInitialPackets != null? firstInitialPackets: List.of();
         this.data = remainingDatagramData;
@@ -55,9 +75,26 @@ public class ServerConnectionThread implements ServerConnectionProxy {
         this.log = log;
 
         queue = new LinkedBlockingQueue<>();
-        String threadId = "receiver-" + Bytes.bytesToHex(serverConnection.getOriginalDestinationConnectionId());
-        connectionReceiverThread = new Thread(this::process, threadId);
-        connectionReceiverThread.start();
+        this.executor = executor;
+        if (executor == null) {
+            String threadId = "receiver-" + Bytes.bytesToHex(serverConnection.getOriginalDestinationConnectionId());
+            connectionReceiverThread = new Thread(this::process, threadId);
+            connectionReceiverThread.start();
+        }
+        else {
+            connectionReceiverThread = null;
+            drainQueued.set(true);
+            executor.execute(() -> {
+                try {
+                    processFirstDatagram();
+                }
+                catch (Throwable error) {
+                    stopped = true;
+                    handle(error);
+                }
+                drain();
+            });
+        }
     }
 
     @Override
@@ -73,6 +110,9 @@ public class ServerConnectionThread implements ServerConnectionProxy {
     @Override
     public void parsePackets(int datagramNumber, Instant timeReceived, ByteBuffer data, InetSocketAddress sourceAddress, boolean more) {
         queue.add(new ReceivedDatagram(datagramNumber, timeReceived, data, sourceAddress, more));
+        if (executor != null && drainQueued.compareAndSet(false, true)) {
+            executor.execute(this::drain);
+        }
     }
 
     @Override
@@ -87,26 +127,18 @@ public class ServerConnectionThread implements ServerConnectionProxy {
 
     @Override
     public void dispose() {
-        connectionReceiverThread.interrupt();
+        if (executor == null) {
+            connectionReceiverThread.interrupt();
+        }
+        else {
+            stopped = true;
+            executor.shutdown();
+        }
     }
 
     private void process() {
         try {
-            PacketParser parser = serverConnection.createParser();
-            for (InitialPacket firstInitialPacket : firstInitialPackets) {
-                serverConnection.getPacketProcessorChain().processPacket(firstInitialPacket, firstInitialPacketMetaData);
-            }
-
-            DatagramFilter datagramProcessingChain = wrapWithFilters(parser, serverConnection::increaseAntiAmplificationLimit, serverConnection::datagramProcessed);
-
-            if (data.hasRemaining()) {
-                // While processing the first initial packet, the anti amplification limit was already increased with the
-                // total datagram size. Now the remainder of the datagram is processed, which will make the
-                // AntiAmplificationTrackingFilter to count these bytes again. To compensate for this, the limit is decreased
-                serverConnection.increaseAntiAmplificationLimit(-1 * data.remaining());
-                datagramProcessingChain.processDatagram(data.slice(), firstInitialPacketMetaData);
-            }
-
+            processFirstDatagram();
             while (! connectionReceiverThread.isInterrupted()) {
                 ReceivedDatagram datagram = queue.poll();
                 if (datagram == null) {
@@ -114,12 +146,66 @@ public class ServerConnectionThread implements ServerConnectionProxy {
                     serverConnection.endReceiveBatch();
                     datagram = queue.take();
                 }
-                PacketMetaData metaData = new PacketMetaData(datagram.timeReceived, datagram.sourceAddress, datagram.datagramNumber, datagram.size);
-                serverConnection.getSender().moreDatagramsQueued(datagram.more || !queue.isEmpty());
-                datagramProcessingChain.processDatagram(datagram.data, metaData);
+                processDatagram(datagram);
             }
         }
-        catch (TransportError error) {
+        catch (InterruptedException e) {
+            // Terminate process and thread, see dispose() method
+        }
+        catch (Throwable error) {
+            handle(error);
+        }
+    }
+
+    /**
+     * Processes the datagrams queued so far, as a task on the executor; the counterpart of one pass through the thread's
+     * loop until the queue is empty.
+     */
+    private void drain() {
+        drainQueued.set(false);
+        if (stopped) {
+            return;
+        }
+        try {
+            ReceivedDatagram datagram;
+            while (! stopped && (datagram = queue.poll()) != null) {
+                processDatagram(datagram);
+            }
+            if (! stopped) {
+                serverConnection.endReceiveBatch();
+            }
+        }
+        catch (Throwable error) {
+            stopped = true;
+            handle(error);
+        }
+    }
+
+    private void processFirstDatagram() throws TransportError {
+        PacketParser parser = serverConnection.createParser();
+        for (InitialPacket firstInitialPacket : firstInitialPackets) {
+            serverConnection.getPacketProcessorChain().processPacket(firstInitialPacket, firstInitialPacketMetaData);
+        }
+
+        datagramProcessingChain = wrapWithFilters(parser, serverConnection::increaseAntiAmplificationLimit, serverConnection::datagramProcessed);
+
+        if (data.hasRemaining()) {
+            // While processing the first initial packet, the anti amplification limit was already increased with the
+            // total datagram size. Now the remainder of the datagram is processed, which will make the
+            // AntiAmplificationTrackingFilter to count these bytes again. To compensate for this, the limit is decreased
+            serverConnection.increaseAntiAmplificationLimit(-1 * data.remaining());
+            datagramProcessingChain.processDatagram(data.slice(), firstInitialPacketMetaData);
+        }
+    }
+
+    private void processDatagram(ReceivedDatagram datagram) throws TransportError {
+        PacketMetaData metaData = new PacketMetaData(datagram.timeReceived, datagram.sourceAddress, datagram.datagramNumber, datagram.size);
+        serverConnection.getSender().moreDatagramsQueued(datagram.more || !queue.isEmpty());
+        datagramProcessingChain.processDatagram(datagram.data, metaData);
+    }
+
+    private void handle(Throwable error) {
+        if (error instanceof TransportError) {
             // https://www.rfc-editor.org/rfc/rfc9000.html#section-11.1
             // "Connection Errors
             //  Errors that result in the connection being unusable, such as an obvious violation of protocol semantics
@@ -128,12 +214,9 @@ public class ServerConnectionThread implements ServerConnectionProxy {
             // "Transport Error Codes
             //  This section lists the defined QUIC transport error codes that can be used in a CONNECTION_CLOSE frame
             //  with a type of 0x1c. These errors apply to the entire connection."
-            serverConnection.connectionError(error);
+            serverConnection.connectionError((TransportError) error);
         }
-        catch (InterruptedException e) {
-            // Terminate process and thread, see dispose() method
-        }
-        catch (Throwable error) {
+        else {
             // Of course, this should never happen. But if it does, there is no point in going on with this connection.
             serverConnection.abortConnection(error);
         }

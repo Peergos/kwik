@@ -52,6 +52,17 @@ public final class ConnectionExecutor {
     }
 
     /**
+     * A new component view of the shared executor, for components that have no thread of their own to fall back on.
+     * @throws IllegalStateException when not shared
+     */
+    public ScheduledExecutorService sharedScheduler() {
+        if (shared == null) {
+            throw new IllegalStateException("not shared");
+        }
+        return new ComponentScheduler(shared);
+    }
+
+    /**
      * @param own  creates the component's own executor, used when not shared
      */
     public ScheduledExecutorService scheduler(Supplier<? extends ScheduledExecutorService> own) {
