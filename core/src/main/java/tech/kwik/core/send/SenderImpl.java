@@ -804,7 +804,11 @@ public class SenderImpl implements Sender, CongestionControlEventListener, Hands
      * only data received from the peer can lift that limit, and receiving it wakes the sender (setAntiAmplificationLimit),
      * so retrying at once would only busy-wait.
      */
+    // Set when determineMaximumWaitTime found nothing due, and returned its fallback wait
+    private boolean nothingDue;
+
     private long nextWaitTime() {
+        nothingDue = false;
         long timeout = determineMaximumWaitTime();
         if (timeout == 0 && blockedByAntiAmplification) {
             subsequentZeroDelays.set(0);
@@ -815,6 +819,11 @@ public class SenderImpl implements Sender, CongestionControlEventListener, Hands
     }
 
     private void scheduleSendTimer(long delayMillis) {
+        if (nothingDue) {
+            // On an event loop every send request wakes the sender, so there is nothing to poll for: a timer per
+            // connection every 5 seconds is just load (each expiry costs Netty's NIO loop a short busy poll)
+            return;
+        }
         if (delayMillis <= 0) {
             wakeUpSenderLoop();
             return;
@@ -872,6 +881,7 @@ public class SenderImpl implements Sender, CongestionControlEventListener, Hands
         // No timeout needed, just wait for next action. In theory, infinity should be returned.
         // However, in order to somewhat forgiving for bugs that would lead to deadlocking the sender, use a
         // value that will keep the connection going, but also indicates there is something wrong.
+        nothingDue = true;
         return 5000;
     }
 
