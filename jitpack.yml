@@ -1,0 +1,5 @@
+jdk:
+  - openjdk21
+install:
+  # Only the core module (artifact kwik)
+  - ./gradlew -Pgroup=$GROUP.$ARTIFACT -Pversion=$VERSION -xtest :kwik:publishToMavenLocal

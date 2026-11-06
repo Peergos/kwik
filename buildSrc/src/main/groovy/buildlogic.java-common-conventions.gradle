@@ -9,14 +9,19 @@ plugins {
     id 'application'
 }
 
-group = 'tech.kwik'
+// JitPack gives the group and version (-Pgroup, -Pversion) and has no signing keys
+def jitpack = System.getenv('JITPACK') != null
+
+if (!jitpack) {
+    group = 'tech.kwik'
+}
 
 // Derive the project version from git at configuration time, so that every task
 // (the jar, and the sources/javadoc jars and publications created by the
 // vanniktech plugin) consistently sees the same version. A clean tag like
 // 'v1.0.19' becomes '1.0.19'; any other 'git describe' output (development
 // builds) is used verbatim.
-version = {
+if (!jitpack) version = {
     def proc = "git describe --always --dirty".execute()
     proc.waitFor()
     if (proc.exitValue() != 0) {
@@ -47,9 +52,12 @@ javadoc {
 
 repositories {
     mavenCentral()
+    maven { url = 'https://jitpack.io' }
 }
 
-ext.agent15_version = '4.0'
+// The Peergos agent15 fork (raw public keys, Ed25519, server-side client authentication), from JitPack; a sibling
+// ../agent15 checkout replaces it, see settings.gradle
+ext.agent15_dependency = 'com.github.Peergos:agent15:97a891be80'
 ext.mockito_version = '5.23.0'
 
 // Resolvable configuration holding just the mockito-core jar, so it can be passed to the test JVM as a Java agent
@@ -101,7 +109,9 @@ mavenPublishing {
     publishToMavenCentral()
 
     // GPG-signs all publications, using the standard signing.* Gradle properties.
-    signAllPublications()
+    if (project.findProperty('signingInMemoryKey') != null || project.findProperty('signing.keyId') != null) {
+        signAllPublications()
+    }
 
     // The artifactId defaults to the (sub)project name, the group and version to
     // the project's group and version. Modules override name/description below.

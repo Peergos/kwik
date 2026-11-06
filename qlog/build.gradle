@@ -3,7 +3,7 @@ plugins {
 }
 
 dependencies {
-    implementation "tech.kwik:agent15:$agent15_version"
+    implementation agent15_dependency
 
     implementation(project(':kwik')) // Add kwik core as a dependency
 

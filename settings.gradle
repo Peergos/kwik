@@ -14,9 +14,9 @@ project(":cli").name = "kwik-cli"
 project(":samples").name = "kwik-samples"
 project(":h09").name = "kwik-h09"
 
-// Build against the local agent15 fork (raw public keys, Ed25519, server-side client authentication).
-includeBuild('../agent15') {
+// Build against a sibling agent15 checkout, when there is one, rather than the fork's JitPack build
+if (file('../agent15').isDirectory() && System.getenv('JITPACK') == null) includeBuild('../agent15') {
     dependencySubstitution {
-        substitute module('tech.kwik:agent15') using project(':core')
+        substitute module('com.github.Peergos:agent15') using project(':core')
     }
 }
