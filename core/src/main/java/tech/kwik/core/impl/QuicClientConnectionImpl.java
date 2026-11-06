@@ -33,6 +33,7 @@ import tech.kwik.agent15.handshake.CertificateMessage;
 import tech.kwik.agent15.handshake.CertificateVerifyMessage;
 import tech.kwik.agent15.handshake.ClientHello;
 import tech.kwik.agent15.handshake.FinishedMessage;
+import tech.kwik.core.concurrent.ConnectionExecutor;
 import tech.kwik.core.*;
 import tech.kwik.core.ack.GlobalAckGenerator;
 import tech.kwik.core.cid.ConnectionIdInfo;
@@ -69,6 +70,7 @@ import javax.net.ssl.TrustManagerFactory;
 import javax.net.ssl.X509ExtendedKeyManager;
 import javax.net.ssl.X509TrustManager;
 import java.io.IOException;
+import java.util.concurrent.ScheduledExecutorService;
 import java.net.*;
 import java.nio.ByteBuffer;
 import java.nio.file.Path;
@@ -180,8 +182,9 @@ public class QuicClientConnectionImpl extends QuicConnectionImpl implements Quic
                                      List<TlsConstants.NamedGroup> keyShareGroups,
                                      List<TlsConstants.NamedGroup> supportedGroups,
                                      X509Certificate clientCertificate, PrivateKey clientCertificateKey,
-                                     DatagramSocketFactory socketFactory, SharedEndpoint sharedEndpoint) throws UnknownHostException, SocketException {
-        super(originalVersion, Role.Client, secretsFile, connectionProperties, "", log);
+                                     DatagramSocketFactory socketFactory, SharedEndpoint sharedEndpoint,
+                                     ConnectionExecutor connectionExecutor) throws UnknownHostException, SocketException {
+        super(originalVersion, Role.Client, secretsFile, connectionProperties, "", connectionExecutor, log);
         this.applicationProtocol = applicationProtocol;
         this.connectTimeout = connectTimeout;
         this.connectionProperties = connectionProperties;
@@ -200,7 +203,7 @@ public class QuicClientConnectionImpl extends QuicConnectionImpl implements Quic
         this.clientCertificateKey = clientCertificateKey;
         this.socketFactory = socketFactory != null? socketFactory: (address) -> new DatagramSocket();
 
-        idleTimer = new IdleTimer(this, log);
+        idleTimer = new IdleTimer(this, getConnectionExecutor(), log);
 
         BiConsumer<Integer, String> closeWithErrorFunction = (error, reason) -> {
             immediateCloseWithError(error, reason);
@@ -497,7 +500,7 @@ public class QuicClientConnectionImpl extends QuicConnectionImpl implements Quic
         }
 
         if (idleTimer.isEnabled()) {
-            keepAliveActor = new KeepAliveActor(quicVersion, seconds, (int) idleTimer.getIdleTimeout(), sender);
+            keepAliveActor = new KeepAliveActor(quicVersion, seconds, (int) idleTimer.getIdleTimeout(), sender, getConnectionExecutor());
         }
     }
 
@@ -1520,6 +1523,7 @@ public class QuicClientConnectionImpl extends QuicConnectionImpl implements Quic
         private X509Certificate clientCertificate;
         private PrivateKey clientCertificateKey;
         private DatagramSocketFactory socketFactory;
+        private ConnectionExecutor connectionExecutor = ConnectionExecutor.threaded();
         private long connectTimeoutInMillis = DEFAULT_CONNECT_TIMEOUT_IN_MILLIS;
         private String applicationProtocol = "";
         private X509TrustManager customTrustManager;
@@ -1560,7 +1564,7 @@ public class QuicClientConnectionImpl extends QuicConnectionImpl implements Quic
                     new QuicClientConnectionImpl(host, port, ipVersionOption, applicationProtocol, connectTimeoutInMillis, connectionProperties, sessionTicket, Version.of(quicVersion),
                             Version.of(preferredVersion), log, proxyHost, secretsFile, initialRtt, connectionIdLength,
                             cipherSuites, keyShareGroups, supportedGroups, clientCertificate, clientCertificateKey,
-                            socketFactory, sharedEndpoint);
+                            socketFactory, sharedEndpoint, connectionExecutor);
 
             if (omitCertificateCheck) {
                 quicConnection.trustAnyServerCertificate();
@@ -1967,6 +1971,12 @@ public class QuicClientConnectionImpl extends QuicConnectionImpl implements Quic
         @Override
         public Builder socketFactory(DatagramSocketFactory socketFactory) {
             this.socketFactory = socketFactory;
+            return this;
+        }
+
+        @Override
+        public Builder connectionExecutor(ScheduledExecutorService executor) {
+            this.connectionExecutor = ConnectionExecutor.shared(executor);
             return this;
         }
 

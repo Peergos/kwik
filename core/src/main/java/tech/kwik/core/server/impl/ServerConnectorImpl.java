@@ -20,6 +20,7 @@ package tech.kwik.core.server.impl;
 
 import tech.kwik.agent15.TlsConstants;
 import tech.kwik.agent15.engine.TlsServerEngineFactory;
+import tech.kwik.core.concurrent.ConnectionExecutor;
 import tech.kwik.core.QuicConnection;
 import tech.kwik.core.QuicConstants;
 import tech.kwik.core.concurrent.DaemonThreadFactory;
@@ -139,6 +140,11 @@ public class ServerConnectorImpl implements ServerConnector {
     }
 
     private ServerConnectorImpl(DatagramSocket socket, TlsServerEngineFactory tlsEngineFactory, List<QuicConnection.QuicVersion> supportedVersions, ServerConnectionConfig configuration, Logger log) {
+        this(socket, tlsEngineFactory, supportedVersions, configuration, ConnectionExecutor.threaded(), log);
+    }
+
+    private ServerConnectorImpl(DatagramSocket socket, TlsServerEngineFactory tlsEngineFactory, List<QuicConnection.QuicVersion> supportedVersions,
+                                ServerConnectionConfig configuration, ConnectionExecutor connectionExecutor, Logger log) {
         this.serverSocket = socket;
         this.tlsEngineFactory = tlsEngineFactory;
         this.supportedVersions = supportedVersions;
@@ -148,7 +154,7 @@ public class ServerConnectorImpl implements ServerConnector {
         applicationProtocolRegistry = new ApplicationProtocolRegistry();
         connectionRegistry = new ServerConnectionRegistryImpl(log);
         serverConnectionFactory = new ServerConnectionFactory(serverSocket, tlsEngineFactory,
-                configuration, applicationProtocolRegistry, connectionRegistry, this::closed, log);
+                configuration, applicationProtocolRegistry, connectionRegistry, this::closed, connectionExecutor, log);
 
         supportedVersionIds = supportedVersions.stream()
                 .map(Version::of)
@@ -586,6 +592,7 @@ public class ServerConnectorImpl implements ServerConnector {
         private String ecCurve;
         private KeyPair rawPublicKey;
         private Predicate<PublicKey> clientRawPublicKeyVerifier;
+        private ConnectionExecutor connectionExecutor = ConnectionExecutor.threaded();
 
         @Override
         public ServerConnector.Builder withPort(int port) {
@@ -670,6 +677,12 @@ public class ServerConnectorImpl implements ServerConnector {
         }
 
         @Override
+        public ServerConnector.Builder withConnectionExecutor(ScheduledExecutorService executor) {
+            this.connectionExecutor = ConnectionExecutor.shared(executor);
+            return this;
+        }
+
+        @Override
         public ServerConnector build() throws SocketException, CertificateException {
             if (socket == null && port == 0) {
                 throw new IllegalStateException("port number not set");
@@ -696,7 +709,7 @@ public class ServerConnectorImpl implements ServerConnector {
                 if (clientRawPublicKeyVerifier != null) {
                     tlsEngineFactory.requireClientRawPublicKey(clientRawPublicKeyVerifier, List.of(TlsConstants.SignatureScheme.ed25519));
                 }
-                return new ServerConnectorImpl(socket, tlsEngineFactory, supportedVersions, configuration, log);
+                return new ServerConnectorImpl(socket, tlsEngineFactory, supportedVersions, configuration, connectionExecutor, log);
             }
             catch (IOException e) {
                 // Impossible, exception is never thrown by TlsServerEngineFactory constructor.

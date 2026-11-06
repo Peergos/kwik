@@ -25,6 +25,7 @@ import tech.kwik.core.*;
 import tech.kwik.core.ack.GlobalAckGenerator;
 import tech.kwik.core.cid.ConnectionIdManager;
 import tech.kwik.core.common.EncryptionLevel;
+import tech.kwik.core.concurrent.ConnectionExecutor;
 import tech.kwik.core.concurrent.DaemonThreadFactory;
 import tech.kwik.core.crypto.ConnectionSecrets;
 import tech.kwik.core.crypto.CryptoStream;
@@ -167,6 +168,7 @@ public abstract class QuicConnectionImpl implements QuicConnection, PacketProces
 
     private RateLimiter closeFramesSendRateLimiter;
     private volatile ConnectionCloseFrame lastConnectionCloseFrameSent;
+    private final ConnectionExecutor connectionExecutor;
     private final ScheduledExecutorService scheduler;
     private ConnectionListener connectionListener;
     protected final ExecutorService callbackThread;
@@ -183,6 +185,12 @@ public abstract class QuicConnectionImpl implements QuicConnection, PacketProces
 
 
     protected QuicConnectionImpl(Version originalVersion, Role role, Path secretsFile, ConnectionConfig settings, String id, Logger log) {
+        this(originalVersion, role, secretsFile, settings, id, ConnectionExecutor.threaded(), log);
+    }
+
+    protected QuicConnectionImpl(Version originalVersion, Role role, Path secretsFile, ConnectionConfig settings, String id,
+                                 ConnectionExecutor connectionExecutor, Logger log) {
+        this.connectionExecutor = connectionExecutor;
         this.quicVersion = new VersionHolder(originalVersion);
         this.role = role;
         this.log = log;
@@ -194,11 +202,10 @@ public abstract class QuicConnectionImpl implements QuicConnection, PacketProces
 
         connectionState = Status.Created;
         closeFramesSendRateLimiter = new ProgressivelyIncreasingRateLimiter();
-        scheduler = createScheduler(id);
-        ThreadPoolExecutor callbackThreadPoolExecutor = new ThreadPoolExecutor(1, 1, 0L, TimeUnit.MILLISECONDS,
+        scheduler = connectionExecutor.scheduler(() -> createScheduler(id));
+        callbackThread = connectionExecutor.executor(() -> new ThreadPoolExecutor(1, 1, 0L, TimeUnit.MILLISECONDS,
                 new LinkedBlockingQueue<>(), new DaemonThreadFactory("callbacks-" + id),
-                new ThreadPoolExecutor.DiscardPolicy());
-        callbackThread = callbackThreadPoolExecutor;
+                new ThreadPoolExecutor.DiscardPolicy()));
         currentEncryptionLevel = Initial;
     }
 
@@ -277,7 +284,7 @@ public abstract class QuicConnectionImpl implements QuicConnection, PacketProces
     @Override
     public void setDatagramHandler(Consumer<byte[]> handler) {
         DaemonThreadFactory daemonThreadFactory = new DaemonThreadFactory("datagram-frame-handler");
-        setDatagramHandler(handler, Executors.newSingleThreadExecutor(daemonThreadFactory));
+        setDatagramHandler(handler, connectionExecutor.executor(() -> Executors.newSingleThreadExecutor(daemonThreadFactory)));
     }
 
     @Override
@@ -1679,6 +1686,10 @@ public abstract class QuicConnectionImpl implements QuicConnection, PacketProces
     }
 
     protected void preTerminateHook() {}
+
+    public ConnectionExecutor getConnectionExecutor() {
+        return connectionExecutor;
+    }
 
     /**
      * Called on sender thread after the sender is shut down (and for example, connection close frame is sent).

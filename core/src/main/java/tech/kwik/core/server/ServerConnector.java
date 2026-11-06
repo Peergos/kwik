@@ -31,6 +31,7 @@ import java.security.PublicKey;
 import java.util.function.Predicate;
 import java.security.cert.CertificateException;
 import java.util.List;
+import java.util.concurrent.ScheduledExecutorService;
 import java.util.Set;
 
 /**
@@ -117,6 +118,12 @@ public interface ServerConnector extends AutoCloseable {
         Builder withConfiguration(ServerConnectionConfig configuration);
 
         Builder withLogger(Logger log);
+
+        /**
+         * Runs the timers and callbacks of all connections on the given executor (e.g. a Netty event loop), instead of
+         * on threads of their own.
+         */
+        Builder withConnectionExecutor(ScheduledExecutorService executor);
 
         /**
          * Builds the server connector.

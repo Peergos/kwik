@@ -18,6 +18,7 @@
  */
 package tech.kwik.core.path;
 
+import tech.kwik.core.concurrent.ConnectionExecutor;
 import tech.kwik.core.cid.ConnectionIdProvider;
 import tech.kwik.core.frame.NewConnectionIdFrame;
 import tech.kwik.core.frame.Padding;
@@ -64,7 +65,13 @@ public class PathValidator {
     private OneShotRateLimiter logOncePerAddressRateLimiter;
 
     public PathValidator(VersionHolder version, InetSocketAddress clientAddress, SenderImpl sender, ServerConnectionSocketManager socketManager, ConnectionIdProvider connectionIdProvider, Logger logger) {
-        this(Executors.newSingleThreadScheduledExecutor(), version, clientAddress, sender, socketManager, Clock.systemUTC(), connectionIdProvider, logger);
+        this(ConnectionExecutor.threaded(), version, clientAddress, sender, socketManager, connectionIdProvider, logger);
+    }
+
+    public PathValidator(ConnectionExecutor connectionExecutor, VersionHolder version, InetSocketAddress clientAddress, SenderImpl sender,
+                         ServerConnectionSocketManager socketManager, ConnectionIdProvider connectionIdProvider, Logger logger) {
+        this(connectionExecutor.scheduler(Executors::newSingleThreadScheduledExecutor), version, clientAddress, sender, socketManager,
+                Clock.systemUTC(), connectionIdProvider, logger);
     }
 
     public PathValidator(ScheduledExecutorService executor, VersionHolder version, InetSocketAddress clientAddress, SenderImpl sender,

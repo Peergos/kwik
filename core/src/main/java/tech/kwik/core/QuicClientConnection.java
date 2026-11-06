@@ -25,6 +25,7 @@ import tech.kwik.core.log.Logger;
 import javax.net.ssl.X509ExtendedKeyManager;
 import javax.net.ssl.X509TrustManager;
 import java.io.IOException;
+import java.util.concurrent.ScheduledExecutorService;
 import java.net.InetSocketAddress;
 import java.net.SocketException;
 import java.net.URI;
@@ -267,6 +268,12 @@ public interface QuicClientConnection extends QuicConnection {
         Builder clientKey(String keyPassword);
 
         Builder socketFactory(DatagramSocketFactory socketFactory);
+
+        /**
+         * Runs the connection's timers and callbacks on the given executor (e.g. a Netty event loop), instead of on
+         * threads of its own.
+         */
+        Builder connectionExecutor(ScheduledExecutorService executor);
 
         /**
          * Enable the datagram extension (RFC 9221).

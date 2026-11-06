@@ -18,6 +18,7 @@
  */
 package tech.kwik.core.impl;
 
+import tech.kwik.core.concurrent.ConnectionExecutor;
 import tech.kwik.core.frame.PingFrame;
 import tech.kwik.core.send.Sender;
 
@@ -51,7 +52,11 @@ public class KeepAliveActor {
      * @param sender
      */
     public KeepAliveActor(VersionHolder quicVersion, int keepAliveTime, int peerIdleTimeout, Sender sender) {
-        this(Clock.systemUTC(), quicVersion, keepAliveTime, peerIdleTimeout, sender, createScheduler());
+        this(quicVersion, keepAliveTime, peerIdleTimeout, sender, ConnectionExecutor.threaded());
+    }
+
+    public KeepAliveActor(VersionHolder quicVersion, int keepAliveTime, int peerIdleTimeout, Sender sender, ConnectionExecutor connectionExecutor) {
+        this(Clock.systemUTC(), quicVersion, keepAliveTime, peerIdleTimeout, sender, connectionExecutor.scheduler(KeepAliveActor::createScheduler));
     }
 
     KeepAliveActor(Clock clock, VersionHolder quicVersion, int keepAliveTime, int peerIdleTimeout, Sender sender, ScheduledExecutorService scheduler) {

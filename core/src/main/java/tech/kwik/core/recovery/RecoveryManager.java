@@ -18,6 +18,7 @@
  */
 package tech.kwik.core.recovery;
 
+import tech.kwik.core.concurrent.ConnectionExecutor;
 import tech.kwik.core.cc.CongestionController;
 import tech.kwik.core.common.EncryptionLevel;
 import tech.kwik.core.common.PnSpace;
@@ -126,6 +127,11 @@ public class RecoveryManager implements FrameReceivedListener<AckFrame>, Handsha
     }
 
     public RecoveryManager(Clock clock, Role role, RttEstimator rttEstimater, CongestionController congestionController, Sender sender, Logger logger) {
+        this(clock, role, rttEstimater, congestionController, sender, ConnectionExecutor.threaded(), logger);
+    }
+
+    public RecoveryManager(Clock clock, Role role, RttEstimator rttEstimater, CongestionController congestionController, Sender sender,
+                           ConnectionExecutor connectionExecutor, Logger logger) {
         this.clock = clock;
         this.role = role;
         this.rttEstimater = rttEstimater;
@@ -136,7 +142,7 @@ public class RecoveryManager implements FrameReceivedListener<AckFrame>, Handsha
         this.sender = sender;
         log = logger;
 
-        scheduler = Executors.newScheduledThreadPool(1, new DaemonThreadFactory("loss-detection"));
+        scheduler = connectionExecutor.scheduler(() -> Executors.newScheduledThreadPool(1, new DaemonThreadFactory("loss-detection")));
         synchronized (scheduleLock) {
             lossDetectionFuture = new NullScheduledFuture();
         }

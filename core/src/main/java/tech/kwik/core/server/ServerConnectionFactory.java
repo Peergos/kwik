@@ -19,6 +19,7 @@
 package tech.kwik.core.server;
 
 import tech.kwik.agent15.engine.TlsServerEngineFactory;
+import tech.kwik.core.concurrent.ConnectionExecutor;
 import tech.kwik.core.crypto.CryptoStream;
 import tech.kwik.core.impl.Version;
 import tech.kwik.core.log.Logger;
@@ -49,11 +50,22 @@ public class ServerConnectionFactory {
     private final Consumer<ServerConnectionImpl> closeCallback;
     private final ServerConnectionRegistry connectionRegistry;
     private final ServerConnectionConfig configuration;
+    private final ConnectionExecutor connectionExecutor;
 
     public ServerConnectionFactory(DatagramSocket serverSocket, TlsServerEngineFactory tlsServerEngineFactory,
                                    ServerConnectionConfig configuration, ApplicationProtocolRegistry applicationProtocolRegistry,
                                    ServerConnectionRegistry connectionRegistry, Consumer<ServerConnectionImpl> closeCallback, Logger log)
     {
+        this(serverSocket, tlsServerEngineFactory, configuration, applicationProtocolRegistry, connectionRegistry, closeCallback,
+                ConnectionExecutor.threaded(), log);
+    }
+
+    public ServerConnectionFactory(DatagramSocket serverSocket, TlsServerEngineFactory tlsServerEngineFactory,
+                                   ServerConnectionConfig configuration, ApplicationProtocolRegistry applicationProtocolRegistry,
+                                   ServerConnectionRegistry connectionRegistry, Consumer<ServerConnectionImpl> closeCallback,
+                                   ConnectionExecutor connectionExecutor, Logger log)
+    {
+        this.connectionExecutor = connectionExecutor;
         if (configuration.connectionIdLength() > MAXIMUM_CONNECTION_ID_LENGTH || configuration.connectionIdLength() < MINIMUM_CONNECTION_ID_LENGTH) {
             throw new IllegalArgumentException();
         }
@@ -78,7 +90,7 @@ public class ServerConnectionFactory {
      */
     public ServerConnectionImpl createNewConnection(Version version, InetSocketAddress clientAddress, byte[] scid, byte[] originalDcid, CryptoStream cryptoStream) {
         ServerConnectionImpl connection = new ServerConnectionImpl(version, serverSocket, clientAddress, scid, originalDcid, cryptoStream,
-                tlsServerEngineFactory, configuration, applicationProtocolRegistry, connectionRegistry, closeCallback, log);
+                tlsServerEngineFactory, configuration, applicationProtocolRegistry, connectionRegistry, closeCallback, connectionExecutor, log);
 
         log.info("Creating new connection with version " + version + " for odcid " + Bytes.bytesToHex(originalDcid)
                 + " with " + clientAddress.getAddress().getHostAddress() + ": " + Bytes.bytesToHex(connection.getInitialConnectionId()));

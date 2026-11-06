@@ -81,7 +81,7 @@ public class QuicPath {
         PathSender pathSender = new PathSender(sender);
         rttEstimator = new RttEstimator(log);
         congestionController = new NewRenoCongestionController(log, sender);
-        recoveryManager = new RecoveryManager(clock, role, rttEstimator, congestionController, pathSender, log);
+        recoveryManager = new RecoveryManager(clock, role, rttEstimator, congestionController, pathSender, sender.getConnectionExecutor(), log);
         recoveryManager.handshakeStateChangedEvent(HandshakeState.Confirmed);
         ackGenerator = new AckGenerator(clock, PnSpace.App, pathSender, rttEstimator, recoveryManager);
         ackGenerator.setPathId(id);

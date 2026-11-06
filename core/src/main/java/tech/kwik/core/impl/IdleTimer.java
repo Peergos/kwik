@@ -18,6 +18,7 @@
  */
 package tech.kwik.core.impl;
 
+import tech.kwik.core.concurrent.ConnectionExecutor;
 import tech.kwik.core.concurrent.DaemonThreadFactory;
 import tech.kwik.core.log.Logger;
 import tech.kwik.core.packet.QuicPacket;
@@ -59,13 +60,21 @@ public class IdleTimer {
     }
 
     public IdleTimer(Clock clock, QuicConnectionImpl connection, Logger logger, int timerResolution) {
+        this(clock, connection, ConnectionExecutor.threaded(), logger, timerResolution);
+    }
+
+    public IdleTimer(QuicConnectionImpl connection, ConnectionExecutor connectionExecutor, Logger logger) {
+        this(Clock.systemUTC(), connection, connectionExecutor, logger, 1000);
+    }
+
+    public IdleTimer(Clock clock, QuicConnectionImpl connection, ConnectionExecutor connectionExecutor, Logger logger, int timerResolution) {
         this.clock = clock;
         this.connection = connection;
         this.ptoSupplier = () -> 0;
         this.log = logger;
         this.timerResolution = timerResolution;
 
-        timer = createScheduler();
+        timer = connectionExecutor.scheduler(this::createScheduler);
         lastActionTime = clock.instant();
         lastAction = Action.PACKET_RECEIVED;  // Initial state is like a packet was received (no tail loss).
     }

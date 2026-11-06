@@ -31,6 +31,7 @@ import tech.kwik.agent15.engine.TlsStatusEventHandler;
 import tech.kwik.agent15.extension.ApplicationLayerProtocolNegotiationExtension;
 import tech.kwik.agent15.extension.Extension;
 import tech.kwik.agent15.handshake.*;
+import tech.kwik.core.concurrent.ConnectionExecutor;
 import tech.kwik.core.ConnectionEstablishedEvent;
 import tech.kwik.core.QuicStream;
 import tech.kwik.core.ack.GlobalAckGenerator;
@@ -131,7 +132,16 @@ public class ServerConnectionImpl extends QuicConnectionImpl implements ServerCo
                                 byte[] peerCid, byte[] originalDcid, CryptoStream cryptoStream, TlsServerEngineFactory tlsServerEngineFactory,
                                 ServerConnectionConfig configuration, ApplicationProtocolRegistry applicationProtocolRegistry,
                                 ServerConnectionRegistry connectionRegistry, Consumer<ServerConnectionImpl> closeCallback, Logger log) {
-        super(originalVersion, Role.Server, null, configuration, Bytes.bytesToHex(originalDcid), new LogProxy(log, originalDcid));
+        this(originalVersion, serverSocket, initialClientAddress, peerCid, originalDcid, cryptoStream, tlsServerEngineFactory,
+                configuration, applicationProtocolRegistry, connectionRegistry, closeCallback, ConnectionExecutor.threaded(), log);
+    }
+
+    public ServerConnectionImpl(Version originalVersion, DatagramSocket serverSocket, InetSocketAddress initialClientAddress,
+                                byte[] peerCid, byte[] originalDcid, CryptoStream cryptoStream, TlsServerEngineFactory tlsServerEngineFactory,
+                                ServerConnectionConfig configuration, ApplicationProtocolRegistry applicationProtocolRegistry,
+                                ServerConnectionRegistry connectionRegistry, Consumer<ServerConnectionImpl> closeCallback,
+                                ConnectionExecutor connectionExecutor, Logger log) {
+        super(originalVersion, Role.Server, null, configuration, Bytes.bytesToHex(originalDcid), connectionExecutor, new LogProxy(log, originalDcid));
         this.originalVersion = originalVersion;
         this.initialClientAddress = initialClientAddress;
         usingIPv4 = InetTools.isIPv4(initialClientAddress.getAddress());
@@ -156,7 +166,7 @@ public class ServerConnectionImpl extends QuicConnectionImpl implements ServerCo
         connectionIdManager = new ConnectionIdManager(peerCid, originalDcid, configuration.connectionIdLength(), allowedClientConnectionIds, connectionRegistry, closeWithErrorFunction, log);
         connectionIdManager.registerClientAddress(initialClientAddress);
 
-        idleTimer = new IdleTimer(this, log);
+        idleTimer = new IdleTimer(this, getConnectionExecutor(), log);
         socketManager = new ServerConnectionSocketManager(serverSocket, initialClientAddress);
         sender = new SenderImpl(quicVersion, getMaxPacketSize(), socketManager, this, Bytes.bytesToHex(originalDcid), configuration.initialRtt(), this.log);
         connectionIdManager.setSender(sender);
@@ -190,7 +200,7 @@ public class ServerConnectionImpl extends QuicConnectionImpl implements ServerCo
         streamManager = new StreamManager(this, Role.Server, log, configuration, callbackThread);
 
         connectionMigrationEnabled = System.getProperty("tech.kwik.server.connection-migration.enabled", "false").equalsIgnoreCase("true");
-        pathValidator = connectionMigrationEnabled? new PathValidator(quicVersion, initialClientAddress, sender, socketManager, connectionIdManager, log): null;
+        pathValidator = connectionMigrationEnabled? new PathValidator(getConnectionExecutor(), quicVersion, initialClientAddress, sender, socketManager, connectionIdManager, log): null;
 
         this.log.getQLog().emitConnectionCreatedEvent(Instant.now());
     }

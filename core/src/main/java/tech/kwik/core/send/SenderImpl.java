@@ -18,6 +18,7 @@
  */
 package tech.kwik.core.send;
 
+import tech.kwik.core.concurrent.ConnectionExecutor;
 import tech.kwik.core.ack.GlobalAckGenerator;
 import tech.kwik.core.cc.CongestionControlEventListener;
 import tech.kwik.core.cc.CongestionController;
@@ -173,7 +174,7 @@ public class SenderImpl implements Sender, CongestionControlEventListener, Hands
 
         congestionController = new NewRenoCongestionController(log, this);
 
-        recoveryManager = new RecoveryManager(connection.getRole(), rttEstimater, congestionController, this, log);
+        recoveryManager = new RecoveryManager(Clock.systemUTC(), connection.getRole(), rttEstimater, congestionController, this, getConnectionExecutor(), log);
         connection.addHandshakeStateListener(recoveryManager);
         connection.addAckFrameReceivedListener(recoveryManager);
         mtuDiscovery = new MtuDiscovery(maxPacketSize, Integer.min(MtuDiscovery.DEFAULT_UPPER_BOUND, MAX_SUPPORTED_PACKET_SIZE));
@@ -444,6 +445,12 @@ public class SenderImpl implements Sender, CongestionControlEventListener, Hands
         shutdownHook = postShutdownAction;
         stopping = true;
         senderThread.interrupt();
+    }
+
+    ConnectionExecutor getConnectionExecutor() {
+        ConnectionExecutor executor = connection.getConnectionExecutor();
+        // Null when the connection is a mock
+        return executor != null? executor: ConnectionExecutor.threaded();
     }
 
     @Override
