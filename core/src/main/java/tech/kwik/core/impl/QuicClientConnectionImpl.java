@@ -80,6 +80,7 @@ import java.security.cert.X509Certificate;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.*;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.function.BiConsumer;
@@ -158,6 +159,7 @@ public class QuicClientConnectionImpl extends QuicConnectionImpl implements Quic
     private final ClientConnectionConfig connectionProperties;
     private volatile byte[] token;
     private final CountDownLatch handshakeFinishedCondition = new CountDownLatch(1);
+    private volatile CompletableFuture<Void> connectFuture;
     private volatile TransportParameters peerTransportParams;
     private KeepAliveActor keepAliveActor;
     private String applicationProtocol;
@@ -411,6 +413,52 @@ public class QuicClientConnectionImpl extends QuicConnectionImpl implements Quic
      * @throws IOException
      */
     @Override
+    public synchronized CompletableFuture<Void> connectAsync() throws IOException {
+        if (connectionState != Status.Created) {
+            throw new IllegalStateException("Cannot connect a connection that is in state " + connectionState);
+        }
+        connectFuture = new CompletableFuture<>();
+        startConnecting();
+        startHandshake(applicationProtocol, false);
+        schedule(() -> {
+            if (! connectFuture.isDone()) {
+                abortHandshake();
+                connectFuture.completeExceptionally(new ConnectException("Connection timed out after " + connectTimeout + " ms"));
+            }
+        }, (int) Long.min(connectTimeout, Integer.MAX_VALUE), TimeUnit.MILLISECONDS);
+        return connectFuture;
+    }
+
+    /**
+     * Ends the wait for the handshake: of connect() and of connectAsync().
+     */
+    private void handshakeOutcomeKnown() {
+        handshakeFinishedCondition.countDown();
+        CompletableFuture<Void> future = connectFuture;
+        if (future != null && ! future.isDone()) {
+            if (connectionState == Status.Connected) {
+                emit(new ConnectionEstablishedEvent(this));
+                future.complete(null);
+            }
+            else {
+                future.completeExceptionally(new ConnectException("Handshake error: " + (handshakeError != null? handshakeError: "")));
+            }
+        }
+    }
+
+    private void startConnecting() {
+        streamManager.initialize(connectionProperties);
+        transportParams = initTransportParameters();
+        transportParams.setInitialSourceConnectionId(connectionIdManager.getInitialConnectionId());
+        log.info(String.format("Original destination connection id: %s (scid: %s)", bytesToHex(connectionIdManager.getOriginalDestinationConnectionId()), bytesToHex(connectionIdManager.getInitialConnectionId())));
+        generateInitialKeys(connectionIdManager.getOriginalDestinationConnectionId());
+
+        receiver.start();
+        sender.start(connectionSecrets);
+        startReceiverLoop();
+    }
+
+    @Override
     public synchronized List<QuicStream> connect(List<StreamEarlyData> earlyData) throws IOException {
         if (connectionState != Status.Created) {
             throw new IllegalStateException("Cannot connect a connection that is in state " + connectionState);
@@ -418,19 +466,10 @@ public class QuicClientConnectionImpl extends QuicConnectionImpl implements Quic
         if (earlyData != null && !earlyData.isEmpty() && sessionTicket == null) {
             throw new IllegalStateException("Cannot send early data without session ticket");
         }
-        streamManager.initialize(connectionProperties);
-        transportParams = initTransportParameters();
-        transportParams.setInitialSourceConnectionId(connectionIdManager.getInitialConnectionId());
         if (earlyData == null) {
             earlyData = Collections.emptyList();
         }
-
-        log.info(String.format("Original destination connection id: %s (scid: %s)", bytesToHex(connectionIdManager.getOriginalDestinationConnectionId()), bytesToHex(connectionIdManager.getInitialConnectionId())));
-        generateInitialKeys(connectionIdManager.getOriginalDestinationConnectionId());
-
-        receiver.start();
-        sender.start(connectionSecrets);
-        startReceiverLoop();
+        startConnecting();
 
         startHandshake(applicationProtocol, !earlyData.isEmpty());
 
@@ -758,7 +797,7 @@ public class QuicClientConnectionImpl extends QuicConnectionImpl implements Quic
             }
 
             connectionState = Status.Connected;
-            handshakeFinishedCondition.countDown();
+            handshakeOutcomeKnown();
     }
 
     @Override
@@ -969,7 +1008,7 @@ public class QuicClientConnectionImpl extends QuicConnectionImpl implements Quic
 
     @Override
     protected void preTerminateHook() {
-        handshakeFinishedCondition.countDown();
+        handshakeOutcomeKnown();
         receiver.shutdown();
         receiveStopped = true;
         if (receiveLoop != null) {
@@ -1265,7 +1304,7 @@ public class QuicClientConnectionImpl extends QuicConnectionImpl implements Quic
         if (error != null) {
             log.error("Aborting connection because of error", error);
         }
-        handshakeFinishedCondition.countDown();
+        handshakeOutcomeKnown();
         sender.stop();
         terminate();
         streamManager.abortAll();

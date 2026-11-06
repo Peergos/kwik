@@ -46,6 +46,7 @@ import java.util.function.Consumer;
 import java.util.stream.Collectors;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Client and server on one executor, connected by an in-memory link instead of sockets: the caller does all I/O, as
@@ -66,6 +67,8 @@ class InMemoryLinkTest {
     private volatile int maxDelayMillis;
     private int dropped;
     private boolean shared = true;
+    private boolean asyncConnect;
+    private Duration connectTimeout = Duration.ofSeconds(20);
 
     @AfterEach
     void closeAll() throws Exception {
@@ -202,10 +205,32 @@ class InMemoryLinkTest {
                 .applicationProtocol(ALPN)
                 .noServerCertificateCheck()
                 .sharedEndpoint(clientEndpoint[0])
-                .connectTimeout(Duration.ofSeconds(20))
+                .connectTimeout(connectTimeout)
                 .logger(new NullLogger())
                 .build();
-        client.connect();
+        if (asyncConnect) {
+            // On the loop, as a Netty channel would; the future completes there too
+            loop.submit(() -> client.connectAsync()).get(5, TimeUnit.SECONDS).get(10, TimeUnit.SECONDS);
+        }
+        else {
+            client.connect();
+        }
+    }
+
+    @Test
+    void connectAsyncCompletesOnTheLoopWithoutBlockingIt() throws Exception {
+        asyncConnect = true;
+        connect();
+        byte[] request = randomBytes(1000);
+        assertThat(echo(request).get(10, TimeUnit.SECONDS)).isEqualTo(request);
+    }
+
+    @Test
+    void connectAsyncFailsWhenThePeerDoesNotAnswer() throws Exception {
+        asyncConnect = true;
+        lossRate = 1.0;
+        connectTimeout = Duration.ofMillis(500);
+        assertThatThrownBy(this::connect).hasCauseInstanceOf(java.net.ConnectException.class);
     }
 
     private CompletableFuture<byte[]> echo(byte[] request) throws Exception {

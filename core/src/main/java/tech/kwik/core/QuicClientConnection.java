@@ -46,6 +46,12 @@ public interface QuicClientConnection extends QuicConnection {
 
     void connect() throws IOException;
 
+    /**
+     * Starts connecting without blocking, for callers on an event loop: the future completes when the handshake has
+     * finished, or completes exceptionally with a {@link java.net.ConnectException} when it fails or times out.
+     */
+    java.util.concurrent.CompletableFuture<Void> connectAsync() throws IOException;
+
     List<QuicStream> connect(List<StreamEarlyData> earlyData) throws IOException;
 
     void keepAlive(int seconds);
