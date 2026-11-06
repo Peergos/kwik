@@ -677,7 +677,7 @@ public class QuicClientConnectionImpl extends QuicConnectionImpl implements Quic
             List<TlsConstants.SignatureScheme> supportedSignatureAlgorithms = serverRawPublicKeyVerifier != null?
                     List.of(ed25519):
                     List.of(rsa_pss_rsae_sha256, rsa_pss_rsae_sha384, rsa_pss_rsae_sha512,
-                            ecdsa_secp256r1_sha256, ecdsa_secp384r1_sha384, ecdsa_secp521r1_sha512);
+                            ecdsa_secp256r1_sha256, ecdsa_secp384r1_sha384, ecdsa_secp521r1_sha512, ed25519);
             tlsEngine.startHandshake(keyShareGroups, supportedGroups, supportedSignatureAlgorithms);
         }
         catch (IOException e) {
@@ -694,7 +694,8 @@ public class QuicClientConnectionImpl extends QuicConnectionImpl implements Quic
         }
         if (clientCertificate != null && clientCertificateKey != null) {
             tlsEngine.setClientCertificateCallback(authorities -> {
-                if (! authorities.contains(clientCertificate.getIssuerX500Principal())) {
+                // An empty list means any certificate is acceptable (RFC 8446 section 4.2.4)
+                if (! authorities.isEmpty() && ! authorities.contains(clientCertificate.getIssuerX500Principal())) {
                     log.warn("Client certificate is not signed by one of the requested authorities: " + authorities);
                 }
                 return new CertificateWithPrivateKey(clientCertificate, clientCertificateKey);
@@ -1535,6 +1536,11 @@ public class QuicClientConnectionImpl extends QuicConnectionImpl implements Quic
     @Override
     public PublicKey getPeerRawPublicKey() {
         return tlsEngine.getServerRawPublicKey();
+    }
+
+    @Override
+    public List<X509Certificate> getPeerCertificateChain() {
+        return getServerCertificateChain();
     }
 
     private void useRawPublicKeys(Predicate<PublicKey> serverKeyVerifier, KeyPair clientKey) {

@@ -59,6 +59,7 @@ import tech.kwik.core.tls.QuicTransportParametersExtension;
 import tech.kwik.core.util.Bytes;
 import tech.kwik.core.util.InetTools;
 
+import java.security.cert.X509Certificate;
 import java.io.IOException;
 import java.security.PublicKey;
 import java.net.DatagramSocket;
@@ -96,6 +97,8 @@ public class ServerConnectionImpl extends QuicConnectionImpl implements ServerCo
     private final boolean retryRequired;
     private final GlobalAckGenerator ackGenerator;
     private final TlsServerEngine tlsEngine;
+    // Set before any crypto stream above Initial is created
+    private boolean clientCertificateRequired;
     private final PathValidator pathValidator;
     private volatile ServerConnectionConfig configuration;
     private final ApplicationProtocolRegistry applicationProtocolRegistry;
@@ -165,6 +168,7 @@ public class ServerConnectionImpl extends QuicConnectionImpl implements ServerCo
         this.closeCallback = closeCallback;
 
         tlsEngine = tlsServerEngineFactory.createServerEngine(new TlsMessageSender(), this);
+        clientCertificateRequired = tlsServerEngineFactory.requiresClientCertificate();
         tlsEngine.addSupportedCiphers(List.of(
                 TlsConstants.CipherSuite.TLS_AES_128_GCM_SHA256,
                 TlsConstants.CipherSuite.TLS_AES_256_GCM_SHA384,
@@ -776,6 +780,19 @@ public class ServerConnectionImpl extends QuicConnectionImpl implements ServerCo
     @Override
     public PublicKey getPeerRawPublicKey() {
         return tlsEngine.getClientRawPublicKey();
+    }
+
+    @Override
+    protected int maxCryptoMessageSize(EncryptionLevel encryptionLevel) {
+        if (encryptionLevel == EncryptionLevel.Handshake && clientCertificateRequired) {
+            return CryptoStream.MAX_CLIENT_CERTIFICATE_MESSAGE_SIZE;
+        }
+        return super.maxCryptoMessageSize(encryptionLevel);
+    }
+
+    @Override
+    public List<X509Certificate> getPeerCertificateChain() {
+        return tlsEngine.getClientCertificateChain();
     }
 
     private class TlsMessageSender implements ServerMessageSender {

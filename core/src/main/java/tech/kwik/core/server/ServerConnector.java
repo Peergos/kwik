@@ -118,6 +118,15 @@ public interface ServerConnector extends AutoCloseable {
          */
         Builder requireClientRawPublicKey(Predicate<PublicKey> verifier);
 
+        /**
+         * Requires clients to authenticate with an X.509 certificate (ECDSA P-256, Ed25519 or RSA), which the trust
+         * manager must accept ({@link javax.net.ssl.X509TrustManager#checkClientTrusted}); use
+         * {@link tech.kwik.core.QuicConnection#getPeerCertificateChain()} to obtain it. A custom trust manager can accept
+         * self-signed certificates, as libp2p uses.
+         * @return  the builder
+         */
+        Builder requireClientCertificate(javax.net.ssl.X509TrustManager trustManager);
+
         Builder withSupportedVersions(List<QuicConnection.QuicVersion> supportedVersions);
 
         Builder withSupportedVersion(QuicConnection.QuicVersion supportedVersion);

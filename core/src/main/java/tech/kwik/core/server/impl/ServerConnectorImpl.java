@@ -625,6 +625,7 @@ public class ServerConnectorImpl implements ServerConnector {
         private String ecCurve;
         private KeyPair rawPublicKey;
         private Predicate<PublicKey> clientRawPublicKeyVerifier;
+        private javax.net.ssl.X509TrustManager clientCertificateTrustManager;
         private ConnectionExecutor connectionExecutor = ConnectionExecutor.threaded();
         private DatagramSender datagramSender;
 
@@ -677,6 +678,12 @@ public class ServerConnectorImpl implements ServerConnector {
         @Override
         public ServerConnector.Builder withRawPublicKey(KeyPair keyPair) {
             this.rawPublicKey = Objects.requireNonNull(keyPair);
+            return this;
+        }
+
+        @Override
+        public ServerConnector.Builder requireClientCertificate(javax.net.ssl.X509TrustManager trustManager) {
+            this.clientCertificateTrustManager = Objects.requireNonNull(trustManager);
             return this;
         }
 
@@ -749,8 +756,16 @@ public class ServerConnectorImpl implements ServerConnector {
                 else {
                     tlsEngineFactory = new TlsServerEngineFactory(certificateFile, certificateKeyFile);
                 }
+                if (clientRawPublicKeyVerifier != null && clientCertificateTrustManager != null) {
+                    throw new IllegalStateException("clients authenticate with either a raw public key or a certificate");
+                }
                 if (clientRawPublicKeyVerifier != null) {
                     tlsEngineFactory.requireClientRawPublicKey(clientRawPublicKeyVerifier, List.of(TlsConstants.SignatureScheme.ed25519));
+                }
+                if (clientCertificateTrustManager != null) {
+                    tlsEngineFactory.requireClientCertificate(clientCertificateTrustManager, List.of(
+                            TlsConstants.SignatureScheme.ecdsa_secp256r1_sha256, TlsConstants.SignatureScheme.ed25519,
+                            TlsConstants.SignatureScheme.rsa_pss_rsae_sha256));
                 }
                 if (datagramSender != null) {
                     return new ServerConnectorImpl(null, datagramSender, tlsEngineFactory, supportedVersions, configuration, connectionExecutor, log);

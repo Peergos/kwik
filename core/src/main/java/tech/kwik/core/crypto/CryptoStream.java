@@ -79,6 +79,14 @@ public class CryptoStream {
     private volatile boolean buffering;
 
     public CryptoStream(VersionHolder quicVersion, EncryptionLevel encryptionLevel, Role role, TlsEngine tlsEngine, Logger log, Sender sender) {
+        this(quicVersion, encryptionLevel, role, tlsEngine, log, sender, defaultMaxMessageSize(role, encryptionLevel));
+    }
+
+    /**
+     * @param maxMessageSize  the largest TLS message accepted from the peer
+     */
+    public CryptoStream(VersionHolder quicVersion, EncryptionLevel encryptionLevel, Role role, TlsEngine tlsEngine, Logger log, Sender sender,
+                        int maxMessageSize) {
         this.quicVersion = quicVersion;
         this.encryptionLevel = encryptionLevel;
         peerRole = role.other();
@@ -95,7 +103,7 @@ public class CryptoStream {
         bufferedMessages = new ArrayList<>();
         tlsMessageParser = new TlsMessageParser(this::quicExtensionsParser);
         dataToSend = new ArrayList<>();
-        maxMessageSize = determineMaxMessageSize(role, encryptionLevel);
+        this.maxMessageSize = maxMessageSize;
         receiveBuffer = new ReceiveBufferImpl();
     }
 
@@ -223,7 +231,12 @@ public class CryptoStream {
         }
     }
 
-    private int determineMaxMessageSize(Role role, EncryptionLevel encryptionLevel) {
+    /**
+     * The largest certificate message accepted from a client when client authentication with a certificate is required.
+     */
+    public static final int MAX_CLIENT_CERTIFICATE_MESSAGE_SIZE = 16384;
+
+    public static int defaultMaxMessageSize(Role role, EncryptionLevel encryptionLevel) {
         // Of course, this is violating the layer separation between QUIC and TLS, but it serves a good purpose:
         // avoid excessive use of memory by malicious peers.
         switch (encryptionLevel) {
@@ -231,7 +244,8 @@ public class CryptoStream {
                 // Client Hello, Server Hello
                 return 3000;
             case Handshake:
-                // Client: Certificate; Server: Finished
+                // Client: Certificate; Server: Finished (and, when it requires a client certificate, that certificate:
+                // MAX_CLIENT_CERTIFICATE_MESSAGE_SIZE)
                 return role == Role.Client ? 16384 : 100;
             case App:
                 // Client: New Session Ticket; Server: -

@@ -1396,7 +1396,8 @@ public abstract class QuicConnectionImpl implements QuicConnection, PacketProces
         // https://www.rfc-editor.org/rfc/rfc9000.html#section-19.6
         // "There is a separate flow of cryptographic handshake data in each encryption level"
         if (cryptoStreams.get(encryptionLevel.ordinal()) == null) {
-            cryptoStreams.set(encryptionLevel.ordinal(), new CryptoStream(quicVersion, encryptionLevel, role, getTlsEngine(), log, getSender()));
+            cryptoStreams.set(encryptionLevel.ordinal(), new CryptoStream(quicVersion, encryptionLevel, role, getTlsEngine(), log, getSender(),
+                    maxCryptoMessageSize(encryptionLevel)));
         }
         return cryptoStreams.get(encryptionLevel.ordinal());
     }
@@ -1686,6 +1687,13 @@ public abstract class QuicConnectionImpl implements QuicConnection, PacketProces
     }
 
     protected void preTerminateHook() {}
+
+    /**
+     * The largest TLS message accepted from the peer at the given encryption level.
+     */
+    protected int maxCryptoMessageSize(EncryptionLevel encryptionLevel) {
+        return CryptoStream.defaultMaxMessageSize(role, encryptionLevel);
+    }
 
     public ConnectionExecutor getConnectionExecutor() {
         return connectionExecutor;

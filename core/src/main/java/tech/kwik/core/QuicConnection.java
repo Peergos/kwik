@@ -18,6 +18,8 @@
  */
 package tech.kwik.core;
 
+import java.util.List;
+import java.security.cert.X509Certificate;
 import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.security.PublicKey;
@@ -148,6 +150,14 @@ public interface QuicConnection extends DatagramExtension {
      * @return  the raw public key (RFC 7250) the peer authenticated with, or null when it did not use one
      */
     default PublicKey getPeerRawPublicKey() {
+        return null;
+    }
+
+    /**
+     * @return  the X.509 certificate chain the peer authenticated with: the server's on a client connection, the
+     * client's on a server connection that requires one; null when there is none (yet)
+     */
+    default List<X509Certificate> getPeerCertificateChain() {
         return null;
     }
 
