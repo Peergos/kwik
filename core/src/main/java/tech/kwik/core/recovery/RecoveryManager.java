@@ -111,6 +111,7 @@ public class RecoveryManager implements FrameReceivedListener<AckFrame>, Handsha
     private final Sender sender;
     private final Logger log;
     private final ScheduledExecutorService scheduler;
+    private final boolean onSharedExecutor;
     private final ProbeType probeType;
     private int receiverMaxAckDelay;
     private ScheduledFuture<?> lossDetectionFuture;  // Concurrency: guarded by scheduleLock
@@ -143,6 +144,7 @@ public class RecoveryManager implements FrameReceivedListener<AckFrame>, Handsha
         log = logger;
 
         scheduler = connectionExecutor.scheduler(() -> Executors.newScheduledThreadPool(1, new DaemonThreadFactory("loss-detection")));
+        onSharedExecutor = connectionExecutor.isShared();
         synchronized (scheduleLock) {
             lossDetectionFuture = new NullScheduledFuture();
         }
@@ -680,9 +682,13 @@ public class RecoveryManager implements FrameReceivedListener<AckFrame>, Handsha
     private void repeatSend(int count, Runnable task) {
         for (int i = 0; i < count; i++) {
             task.run();
-            try {
-                Thread.sleep(1);  // Use a small delay when sending multiple packets
-            } catch (InterruptedException e) {
+            // Use a small delay when sending multiple packets; but not on a shared executor (e.g. an event loop), where
+            // sleeping would stall every other connection on it
+            if (! onSharedExecutor) {
+                try {
+                    Thread.sleep(1);
+                } catch (InterruptedException e) {
+                }
             }
         }
     }
