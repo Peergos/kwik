@@ -155,6 +155,12 @@ public interface Sender {
     void flush();
 
     /**
+     * In event-loop mode, sends what is queued right away, rather than in a later task; for before a local close, which
+     * discards whatever is still queued. Must be called on the event loop.
+     */
+    default void sendQueuedNow() {}
+
+    /**
      * Returns the time the last ack-eliciting packet was sent.
      * @return
      */

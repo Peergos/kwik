@@ -65,6 +65,7 @@ import tech.kwik.core.util.Bytes;
 import tech.kwik.core.util.InetTools;
 
 import javax.net.ssl.KeyManager;
+import javax.net.ssl.SSLHandshakeException;
 import javax.net.ssl.KeyManagerFactory;
 import javax.net.ssl.TrustManagerFactory;
 import javax.net.ssl.X509ExtendedKeyManager;
@@ -181,6 +182,8 @@ public class QuicClientConnectionImpl extends QuicConnectionImpl implements Quic
     private DatagramFilter receiveChain;
     private int receivedPacketCounter;
     private volatile String handshakeError;
+    private volatile boolean tlsHandshakeFailure;
+    private volatile ConnectionCloseFrame peerHandshakeClose;
     private volatile ClientHello originalClientHello;
 
 
@@ -422,8 +425,8 @@ public class QuicClientConnectionImpl extends QuicConnectionImpl implements Quic
         startHandshake(applicationProtocol, false);
         schedule(() -> {
             if (! connectFuture.isDone()) {
+                connectFuture.completeExceptionally(new SocketTimeoutException("Connection timed out after " + connectTimeout + " ms"));
                 abortHandshake();
-                connectFuture.completeExceptionally(new ConnectException("Connection timed out after " + connectTimeout + " ms"));
             }
         }, (int) Long.min(connectTimeout, Integer.MAX_VALUE), TimeUnit.MILLISECONDS);
         return connectFuture;
@@ -441,7 +444,18 @@ public class QuicClientConnectionImpl extends QuicConnectionImpl implements Quic
                 future.complete(null);
             }
             else {
-                future.completeExceptionally(new ConnectException("Handshake error: " + (handshakeError != null? handshakeError: "")));
+                String message = "Handshake error: " + (handshakeError != null? handshakeError: "");
+                ConnectionCloseFrame peerClose = peerHandshakeClose;
+                if (tlsHandshakeFailure) {
+                    future.completeExceptionally(new SSLHandshakeException(message));
+                }
+                else if (peerClose != null) {
+                    future.completeExceptionally(new PeerClosedConnectionException(message, peerClose.getFrameType() == 0x1d,
+                            peerClose.getErrorCode(), peerClose.hasReasonPhrase()? peerClose.getReasonPhrase(): ""));
+                }
+                else {
+                    future.completeExceptionally(new ConnectException(message));
+                }
             }
         }
     }
@@ -985,12 +999,17 @@ public class QuicClientConnectionImpl extends QuicConnectionImpl implements Quic
             keepAliveActor.shutdown();
         }
         super.immediateCloseWithError(error, errorType, errorReason);
+        // Without waiting for the closing period to end
+        if (connectionState != Status.Connected && handshakeFinishedCondition.getCount() > 0) {
+            handshakeOutcomeKnown();
+        }
     }
 
     @Override
     protected void cryptoProcessingErrorOcurred(Exception exception) {
         if (connectionState == Status.Handshaking) {
             handshakeError = exception.toString();
+            tlsHandshakeFailure = true;
             log.error("Handshake failed with crypto error", exception);
         }
         else {
@@ -1000,9 +1019,14 @@ public class QuicClientConnectionImpl extends QuicConnectionImpl implements Quic
 
     @Override
     protected void peerClosedWithError(ConnectionCloseFrame closeFrame) {
-        super.peerClosedWithError(closeFrame);
-        if (connectionState == Status.Handshaking) {
+        boolean handshaking = connectionState == Status.Handshaking;
+        if (handshaking) {
             handshakeError = "Server closed connection: " + determineClosingErrorMessage(closeFrame);
+            peerHandshakeClose = closeFrame;
+        }
+        super.peerClosedWithError(closeFrame);
+        if (handshaking) {
+            handshakeOutcomeKnown();
         }
     }
 

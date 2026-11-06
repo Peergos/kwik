@@ -299,6 +299,11 @@ public class QuicPath {
         }
 
         @Override
+        public void sendQueuedNow() {
+            sender.sendQueuedNow();
+        }
+
+        @Override
         public Instant lastAckElicitingSent() {
             return sender.lastAckElicitingSent();
         }

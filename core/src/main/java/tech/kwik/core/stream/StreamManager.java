@@ -60,6 +60,7 @@ public class StreamManager {
     private volatile Long maxStreamsAcceptedByPeerBidi;
     private volatile Long maxStreamsAcceptedByPeerUni;
     private final Semaphore openBidirectionalStreams;
+    private volatile Runnable streamCreditListener = () -> {};
     private final Semaphore openUnidirectionalStreams;
     private volatile boolean maxOpenStreamsUniUpdateQueued;
     private volatile boolean maxOpenStreamsBidiUpdateQueued;
@@ -323,10 +324,17 @@ public class StreamManager {
         }
     }
 
-    public void process(StopSendingFrame stopSendingFrame) {
+    public void process(StopSendingFrame stopSendingFrame) throws TransportError {
         // https://www.rfc-editor.org/rfc/rfc9000.html#name-solicited-state-transitions
         // "A STOP_SENDING frame requests that the receiving endpoint send a RESET_STREAM frame."
-        QuicStreamImpl stream = streams.get(stopSendingFrame.getStreamId());
+        int streamId = stopSendingFrame.getStreamId();
+        QuicStreamImpl stream = streams.get(streamId);
+        if (stream == null && isPeerInitiated(streamId) && isBidi(streamId) && streamId >= nextPeerInitiatedBidirectionalStreamId) {
+            // https://www.rfc-editor.org/rfc/rfc9000.html#section-3.2
+            // "For bidirectional streams initiated by a peer, receipt of a MAX_STREAM_DATA or STOP_SENDING frame for the
+            //  sending part of the stream also creates the receiving part."
+            stream = createPeerInitiatedStream(streamId);
+        }
         if (stream != null) {
             // "An endpoint SHOULD copy the error code from the STOP_SENDING frame to the RESET_STREAM frame it sends, ..."
             stream.peerStoppedSending(stopSendingFrame.getErrorCode());
@@ -501,6 +509,7 @@ public class StreamManager {
                 log.debug("increased max bidirectional streams with " + increment + " to " + frame.getMaxStreams());
                 maxStreamsAcceptedByPeerBidi = frame.getMaxStreams();
                 openBidirectionalStreams.release(increment);
+                streamCreditListener.run();
             }
         }
         else {
@@ -510,8 +519,17 @@ public class StreamManager {
                 log.debug("increased max unidirectional streams with " + increment + " to " + frame.getMaxStreams());
                 maxStreamsAcceptedByPeerUni = frame.getMaxStreams();
                 openUnidirectionalStreams.release(increment);
+                streamCreditListener.run();
             }
         }
+    }
+
+    public int availableStreams(boolean bidirectional) {
+        return bidirectional? openBidirectionalStreams.availablePermits(): openUnidirectionalStreams.availablePermits();
+    }
+
+    public void setStreamCreditListener(Runnable listener) {
+        streamCreditListener = listener != null? listener: () -> {};
     }
 
     public void abortAll() {
@@ -540,6 +558,7 @@ public class StreamManager {
                 initialMaxStreamsBidi = Integer.MAX_VALUE;
             }
             openBidirectionalStreams.release((int) initialMaxStreamsBidi);
+            streamCreditListener.run();
         }
         else {
             log.error("Attempt to reduce value of initial_max_streams_bidi from " + maxStreamsAcceptedByPeerBidi + " to " + initialMaxStreamsBidi + "; ignoring.");
@@ -559,6 +578,7 @@ public class StreamManager {
                 initialMaxStreamsUni = Integer.MAX_VALUE;
             }
             openUnidirectionalStreams.release((int) initialMaxStreamsUni);
+            streamCreditListener.run();
         }
         else {
             log.error("Attempt to reduce value of initial_max_streams_uni from " + maxStreamsAcceptedByPeerUni + " to " + initialMaxStreamsUni + "; ignoring.");

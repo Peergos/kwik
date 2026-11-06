@@ -439,6 +439,19 @@ public class SenderImpl implements Sender, CongestionControlEventListener, Hands
     public void flush() {
         wakeUpSenderLoop();
     }
+
+    @Override
+    public void sendQueuedNow() {
+        // Also once stopped: what is queued then is the CONNECTION_CLOSE
+        if (loop != null && running) {
+            try {
+                sendIfAny();
+            }
+            catch (IOException e) {
+                log.warn("Sending queued data before close failed: " + e);
+            }
+        }
+    }
     
     public void discard(PnSpace space, String reason) {
         synchronized (discardedSpaces) {

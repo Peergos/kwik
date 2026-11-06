@@ -302,6 +302,40 @@ public abstract class QuicConnectionImpl implements QuicConnection, PacketProces
         return getStreamManager().createStream(bidirectional);
     }
 
+    @Override
+    public int availableStreams(boolean bidirectional) {
+        return getStreamManager().availableStreams(bidirectional);
+    }
+
+    @Override
+    public byte[] localConnectionId() {
+        return getConnectionIdManager().getCurrentConnectionId();
+    }
+
+    @Override
+    public byte[] peerConnectionId() {
+        List<byte[]> active = getConnectionIdManager().getActivePeerConnectionIds();
+        return active.isEmpty()? new byte[0]: active.get(0);
+    }
+
+    @Override
+    public void setStreamCreditListener(Runnable listener) {
+        getStreamManager().setStreamCreditListener(listener);
+    }
+
+    @Override
+    public QuicStream tryCreateStream(boolean bidirectional) throws IOException {
+        if (connectionState != Status.Connected) {
+            throw new IOException("not connected");
+        }
+        try {
+            return getStreamManager().createStream(bidirectional, 0, TimeUnit.MILLISECONDS);
+        }
+        catch (TimeoutException e) {
+            return null;
+        }
+    }
+
     public void datagramProcessed() {
         // Processed all packets in the datagram, so not expecting more.
         getSender().packetProcessed(false);
@@ -1365,7 +1399,12 @@ public abstract class QuicConnectionImpl implements QuicConnection, PacketProces
 
     @Override
     public void process(StopSendingFrame stopSendingFrame, QuicPacket packet, PacketMetaData metaData) {
-        getStreamManager().process(stopSendingFrame);
+        try {
+            getStreamManager().process(stopSendingFrame);
+        }
+        catch (TransportError transportError) {
+            immediateCloseWithError(transportError.getTransportErrorCode().value, null);
+        }
     }
 
     @Override
@@ -1764,10 +1803,12 @@ public abstract class QuicConnectionImpl implements QuicConnection, PacketProces
 
     @Override
     public void close() {
+        getSender().sendQueuedNow();
         immediateClose();
         // Because this method is not called in the context of processing received messages,
         // sender flush must be called explicitly.
         getSender().flush();
+        getSender().sendQueuedNow();
     }
 
     @Override
@@ -1794,18 +1835,22 @@ public abstract class QuicConnectionImpl implements QuicConnection, PacketProces
 
     @Override
     public void close(QuicConstants.TransportErrorCode applicationError, String errorReason) {
+        getSender().sendQueuedNow();
         immediateCloseWithError(applicationError.value, QUIC_LAYER_ERROR, errorReason);
         // Because this method is not called in the context of processing received messages,
         // sender flush must be called explicitly.
         getSender().flush();
+        getSender().sendQueuedNow();
     }
 
     @Override
     public void close(long applicationError, String errorReason) {
+        getSender().sendQueuedNow();
         immediateCloseWithError(applicationError, APPLICATION_ERROR, errorReason);
         // Because this method is not called in the context of processing received messages,
         // sender flush must be called explicitly.
         getSender().flush();
+        getSender().sendQueuedNow();
     }
 
     private static ScheduledExecutorService createScheduler(String id) {

@@ -99,6 +99,33 @@ public interface QuicConnection extends DatagramExtension {
     QuicStream createStream(boolean bidirectional) throws IOException;
 
     /**
+     * Creates a stream without blocking.
+     * @return the created stream, or null when there are no stream credits available
+     * @throws IOException  when the stream cannot be created because the connection is closed or not yet established
+     */
+    QuicStream tryCreateStream(boolean bidirectional) throws IOException;
+
+    /**
+     * @return the number of streams of the given type that can currently be created without blocking
+     */
+    int availableStreams(boolean bidirectional);
+
+    /**
+     * Sets a listener that is called whenever the peer grants more stream credits.
+     */
+    void setStreamCreditListener(Runnable listener);
+
+    /**
+     * @return a connection id that this endpoint currently uses, i.e. that the peer may send to
+     */
+    byte[] localConnectionId();
+
+    /**
+     * @return a connection id of the peer that this endpoint currently sends to
+     */
+    byte[] peerConnectionId();
+
+    /**
      * Returns whether streams can be reset with partial delivery guarantee, see
      * {@link QuicStream#resetStreamAt(long, long)}. This requires the peer to support the "Stream Resets with Partial
      * Delivery" extension (https://www.ietf.org/archive/id/draft-ietf-quic-reliable-stream-reset-07.html), which is
