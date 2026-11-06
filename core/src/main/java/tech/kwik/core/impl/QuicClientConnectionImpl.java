@@ -1587,6 +1587,10 @@ public class QuicClientConnectionImpl extends QuicConnectionImpl implements Quic
         clientRawPublicKey = clientKey;
     }
 
+    protected void disableHostnameVerification() {
+        tlsEngine.setHostnameVerifier((hostname, serverCertificate) -> true);
+    }
+
     protected void setTrustManager(X509TrustManager customTrustManager) {
         tlsEngine.setTrustManager(customTrustManager);
     }
@@ -1643,6 +1647,7 @@ public class QuicClientConnectionImpl extends QuicConnectionImpl implements Quic
         private long connectTimeoutInMillis = DEFAULT_CONNECT_TIMEOUT_IN_MILLIS;
         private String applicationProtocol = "";
         private X509TrustManager customTrustManager;
+        private boolean noHostnameVerification;
         private KeyStore keyStore;
         private String keyPassword;
         private boolean enableDatagramExtension;
@@ -1686,6 +1691,9 @@ public class QuicClientConnectionImpl extends QuicConnectionImpl implements Quic
                 quicConnection.trustAnyServerCertificate();
             }
 
+            if (noHostnameVerification) {
+                quicConnection.disableHostnameVerification();
+            }
             if (customTrustManager != null) {
                 quicConnection.setTrustManager(customTrustManager);
             }
@@ -1993,6 +2001,12 @@ public class QuicClientConnectionImpl extends QuicConnectionImpl implements Quic
                 // Should be thrown as checked exception, but would require (incompatible) interface change.
                 throw new RuntimeException(e);
             }
+            return this;
+        }
+
+        @Override
+        public Builder noHostnameVerification() {
+            noHostnameVerification = true;
             return this;
         }
 

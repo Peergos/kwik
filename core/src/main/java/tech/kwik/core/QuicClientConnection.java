@@ -197,6 +197,13 @@ public interface QuicClientConnection extends QuicConnection {
          */
         Builder customTrustManager(X509TrustManager customTrustManager);
 
+        /**
+         * Skips checking that the server's certificate matches the host name; the trust manager still decides whether
+         * the certificate is accepted. For peers that are authenticated by other means than the host name, e.g. libp2p's
+         * peer ids.
+         */
+        Builder noHostnameVerification();
+
         Builder quantumReadinessTest(int nrOfDummyBytes);
 
         Builder clientCertificate(X509Certificate certificate);
