@@ -31,8 +31,9 @@ public class MissingKeysException extends Exception {
     private final Cause cause;
 
     public MissingKeysException(EncryptionLevel encryptionLevel, boolean discarded) {
+        // No stack trace: this is thrown routinely, e.g. for each packet arriving after its keys were discarded
         super("Missing keys for encryption level " + encryptionLevel
-                + (discarded? " (keys discarded)": " (keys not installed)"));
+                + (discarded? " (keys discarded)": " (keys not installed)"), null, false, false);
         this.encryptionLevel = encryptionLevel;
         this.cause = discarded ? MissingKeysException.Cause.DiscardedKeys : MissingKeysException.Cause.MissingKeys;
     }

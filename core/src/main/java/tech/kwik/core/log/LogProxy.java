@@ -23,6 +23,7 @@ import tech.kwik.core.packet.QuicPacket;
 
 import java.lang.reflect.Constructor;
 import java.lang.reflect.InvocationTargetException;
+import java.util.Optional;
 import java.nio.ByteBuffer;
 import java.time.Instant;
 import java.util.List;
@@ -37,13 +38,28 @@ public class LogProxy implements Logger {
         qlogFrontEnd = loadImplementation(originalDestinationConnectionId);
     }
 
+    // Looked up once: a failing lookup (qlog not on the class path) searches the class path, for each connection
+    private static volatile Optional<Constructor<?>> qlogConstructor;
+
     private QLog loadImplementation(byte[] originalDestinationConnectionId) {
-        try {
-            Class clazz = this.getClass().getClassLoader().loadClass("tech.kwik.qlog.QLogFrontEnd");
-            Constructor constructor = clazz.getConstructor(byte[].class);
-            return (QLog) constructor.newInstance(originalDestinationConnectionId);
+        Optional<Constructor<?>> constructor = qlogConstructor;
+        if (constructor == null) {
+            try {
+                Class<?> clazz = this.getClass().getClassLoader().loadClass("tech.kwik.qlog.QLogFrontEnd");
+                constructor = Optional.of(clazz.getConstructor(byte[].class));
+            }
+            catch (ClassNotFoundException | NoSuchMethodException e) {
+                constructor = Optional.empty();
+            }
+            qlogConstructor = constructor;
         }
-        catch (ClassNotFoundException | NoSuchMethodException | InstantiationException | IllegalAccessException | InvocationTargetException e) {
+        if (constructor.isEmpty()) {
+            return new NullQLog();
+        }
+        try {
+            return (QLog) constructor.get().newInstance((Object) originalDestinationConnectionId);
+        }
+        catch (InstantiationException | IllegalAccessException | InvocationTargetException e) {
             return new NullQLog();
         }
     }

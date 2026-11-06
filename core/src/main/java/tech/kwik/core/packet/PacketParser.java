@@ -18,6 +18,8 @@
  */
 package tech.kwik.core.packet;
 
+import tech.kwik.core.generic.InvalidIntegerEncodingException;
+import tech.kwik.core.generic.VariableLengthInteger;
 import tech.kwik.core.common.PnSpace;
 import tech.kwik.core.crypto.Aead;
 import tech.kwik.core.crypto.ConnectionSecrets;
@@ -157,7 +159,18 @@ public abstract class PacketParser {
         data.reset();
 
         if (packet.getEncryptionLevel() != null) {
-            Aead aead = getAead(packet, data);
+            Aead aead;
+            try {
+                aead = getAead(packet, data);
+            }
+            catch (MissingKeysException missingKeys) {
+                // So the caller can go on with the packets coalesced after this one (RFC 9000 section 12.2); without
+                // this, losing e.g. a handshake probe whose keys were discarded loses the 1-RTT packet after it too.
+                if (packet instanceof LongHeaderPacket) {
+                    skipLongHeaderPacket(data, packet instanceof InitialPacket);
+                }
+                throw missingKeys;
+            }
             long largestPN = packet.getPnSpace() != null? largestPacketNumber[packet.getPnSpace().ordinal()]: 0;
             PathResolver resolver = pathResolver;
             if (resolver != null && packet instanceof ShortHeaderPacket && data.remaining() > 1 + cidLength) {
@@ -185,6 +198,34 @@ public abstract class PacketParser {
             largestPacketNumber[packet.getPnSpace().ordinal()] = packet.getPacketNumber();
         }
         return packet;
+    }
+
+    /**
+     * Moves the position of data, which is at the start of a long header packet with a length field, to its end; leaves
+     * it where it was when the header cannot be read.
+     */
+    private static void skipLongHeaderPacket(ByteBuffer data, boolean initial) {
+        int start = data.position();
+        try {
+            data.position(start + 1 + 4);
+            int dcidLength = data.get() & 0xff;
+            data.position(data.position() + dcidLength);
+            int scidLength = data.get() & 0xff;
+            data.position(data.position() + scidLength);
+            if (initial) {
+                long tokenLength = VariableLengthInteger.parseLong(data);
+                data.position(Math.addExact(data.position(), Math.toIntExact(tokenLength)));
+            }
+            long length = VariableLengthInteger.parseLong(data);
+            int end = Math.addExact(data.position(), Math.toIntExact(length));
+            if (end > data.limit()) {
+                throw new IllegalArgumentException();
+            }
+            data.position(end);
+        }
+        catch (RuntimeException | InvalidIntegerEncodingException malformed) {
+            data.position(start);
+        }
     }
 
     /**
