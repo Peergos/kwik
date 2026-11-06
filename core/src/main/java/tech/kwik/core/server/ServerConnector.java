@@ -73,6 +73,12 @@ public interface ServerConnector extends AutoCloseable {
      */
     void close();
 
+    /**
+     * Closes all connections (each sends its CONNECTION_CLOSE) and the connector, without waiting for the connections
+     * to end their closing period. For a connector with a connection executor, it must be called on that executor.
+     */
+    void closeWithoutWaiting();
+
     static Builder builder() {
         return new ServerConnectorImpl.BuilderImpl();
     }

@@ -556,6 +556,11 @@ public class ServerConnectorImpl implements ServerConnector {
         close(Duration.ofSeconds(DEFAULT_CLOSE_TIMEOUT_IN_SECONDS));
     }
 
+    @Override
+    public void closeWithoutWaiting() {
+        close(Duration.ZERO);
+    }
+
     protected void close(Duration timeout) {
         log.info("Shutting down " + this);
         closing = true;
