@@ -18,6 +18,8 @@
  */
 package tech.kwik.core.stream;
 
+import java.nio.ByteBuffer;
+import java.io.IOException;
 import java.io.OutputStream;
 
 public abstract class StreamOutputStream extends OutputStream {
@@ -33,4 +35,15 @@ public abstract class StreamOutputStream extends OutputStream {
     protected abstract void stopFlowControl();
 
     abstract void abort();
+
+    abstract int writeNonBlocking(ByteBuffer data, boolean fin) throws IOException;
+
+    abstract int writeCapacity();
+
+    abstract void setWriteListener(Runnable listener);
+
+    /**
+     * The peer sent STOP_SENDING: records its error code (for the non-blocking write to report) and resets the stream.
+     */
+    abstract void peerStoppedSending(long errorCode);
 }

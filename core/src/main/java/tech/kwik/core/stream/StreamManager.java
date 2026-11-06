@@ -87,6 +87,13 @@ public class StreamManager {
      * @param config
      * @param callbackExecutor
      */
+    /**
+     * The executor that runs application callbacks; the shared executor when the connection runs on one.
+     */
+    ExecutorService getCallbackExecutor() {
+        return callbackExecutor;
+    }
+
     public StreamManager(QuicConnectionImpl quicConnection, Role role, Logger log, ConnectionConfig config, ExecutorService callbackExecutor) {
         this.connection = quicConnection;
         this.role = role;
@@ -322,7 +329,7 @@ public class StreamManager {
         QuicStreamImpl stream = streams.get(stopSendingFrame.getStreamId());
         if (stream != null) {
             // "An endpoint SHOULD copy the error code from the STOP_SENDING frame to the RESET_STREAM frame it sends, ..."
-            stream.resetStream(stopSendingFrame.getErrorCode());
+            stream.peerStoppedSending(stopSendingFrame.getErrorCode());
         }
     }
 

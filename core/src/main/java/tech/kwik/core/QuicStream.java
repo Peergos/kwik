@@ -18,6 +18,8 @@
  */
 package tech.kwik.core;
 
+import java.nio.ByteBuffer;
+import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 
@@ -144,6 +146,42 @@ public interface QuicStream {
      * @deprecated use {@link #abortReading(long)} instead
      * @param applicationProtocolErrorCode
      */
+    /**
+     * Reads what is available without blocking, for use instead of {@link #getInputStream()}, e.g. on an event loop.
+     * @return the number of bytes read; 0 when none are available yet, -1 at the end of the stream (once all data,
+     * including the FIN, has been received and read)
+     * @throws StreamResetException when the peer reset the stream
+     * @throws StreamClosedException when reading was aborted, or the connection closed
+     */
+    default int read(ByteBuffer buffer) throws IOException {
+        throw new UnsupportedOperationException();
+    }
+
+    /**
+     * Writes without blocking, for use instead of {@link #getOutputStream()}: takes as much of the data as fits in the
+     * send buffer ({@link #writeCapacity()}) and, when it takes all of it and fin is set, ends the stream.
+     * @return the number of bytes taken from data
+     * @throws StreamStoppedException when the peer sent STOP_SENDING
+     * @throws IOException when the stream was ended or reset, or the connection closed
+     */
+    default int write(ByteBuffer data, boolean fin) throws IOException {
+        throw new UnsupportedOperationException();
+    }
+
+    /**
+     * The number of bytes a {@link #write(ByteBuffer, boolean)} can take now.
+     */
+    default int writeCapacity() {
+        throw new UnsupportedOperationException();
+    }
+
+    /**
+     * Sets the listener for the non-blocking API. Data may already have arrived before it was set, so try a read after.
+     */
+    default void setStreamListener(StreamListener listener) {
+        throw new UnsupportedOperationException();
+    }
+
     @Deprecated
     default void closeInput(long applicationProtocolErrorCode) {
         abortReading(applicationProtocolErrorCode);

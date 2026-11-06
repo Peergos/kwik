@@ -19,10 +19,12 @@
 package tech.kwik.core.stream;
 
 import tech.kwik.core.common.EncryptionLevel;
+import tech.kwik.core.StreamStoppedException;
 import tech.kwik.core.frame.*;
 import tech.kwik.core.log.Logger;
 
 import java.io.IOException;
+import java.nio.ByteBuffer;
 import java.io.InterruptedIOException;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.locks.ReentrantLock;
@@ -71,6 +73,8 @@ class StreamOutputStreamImpl extends StreamOutputStream implements FlowControlUp
     private long blockedOffset;
     protected final FlowControl flowController;
     private volatile boolean aborted;
+    // The error code of the peer's STOP_SENDING, or -1 when none was received
+    private volatile long stopSendingErrorCode = -1;
 
     StreamOutputStreamImpl(QuicStreamImpl quicStream, Integer sendBufferSize, FlowControl flowControl, Logger log) {
         this.quicStream = quicStream;
@@ -443,5 +447,42 @@ class StreamOutputStreamImpl extends StreamOutputStream implements FlowControlUp
     void abort() {
         aborted = true;
         interruptBlockingThread();
+        sendBuffer.wakeNonBlockingWriter();
+    }
+
+    @Override
+    int writeNonBlocking(ByteBuffer data, boolean fin) throws IOException {
+        if (stopSendingErrorCode >= 0) {
+            throw new StreamStoppedException(stopSendingErrorCode);
+        }
+        checkState();
+        int written = sendBuffer.offer(data);
+        totalWritten += written;
+        boolean ended = fin && !data.hasRemaining();
+        if (ended) {
+            sendBuffer.close();
+            closed = true;
+        }
+        if (written > 0 || ended) {
+            scheduleSendStreamFrameRequest(true);
+        }
+        return written;
+    }
+
+    @Override
+    int writeCapacity() {
+        return closed || reset || aborted? 0: sendBuffer.freeSpace();
+    }
+
+    @Override
+    void setWriteListener(Runnable listener) {
+        sendBuffer.setSpaceListener(listener);
+    }
+
+    @Override
+    void peerStoppedSending(long errorCode) {
+        // Before resetting, which wakes a non-blocking writer that then has to see why
+        stopSendingErrorCode = errorCode;
+        reset(errorCode);
     }
 }

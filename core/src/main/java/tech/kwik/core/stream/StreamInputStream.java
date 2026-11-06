@@ -18,6 +18,8 @@
  */
 package tech.kwik.core.stream;
 
+import java.nio.ByteBuffer;
+import java.io.IOException;
 import tech.kwik.core.frame.StreamFrame;
 import tech.kwik.core.impl.TransportError;
 
@@ -36,4 +38,8 @@ public abstract class StreamInputStream extends InputStream {
     abstract long terminateAt(long errorCode, long finalSize, long reliableSize) throws TransportError;
 
     abstract void abort();
+
+    abstract int readNonBlocking(ByteBuffer buffer) throws IOException;
+
+    abstract void setReadListener(Runnable listener);
 }

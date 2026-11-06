@@ -18,6 +18,7 @@
  */
 package tech.kwik.core.stream;
 
+import java.nio.ByteBuffer;
 import tech.kwik.core.frame.StreamFrame;
 import tech.kwik.core.impl.TransportError;
 
@@ -51,6 +52,15 @@ public class NullStreamInputStream extends StreamInputStream {
 
     @Override
     void abort() {
+    }
+
+    @Override
+    int readNonBlocking(ByteBuffer buffer) {
+        return -1;
+    }
+
+    @Override
+    void setReadListener(Runnable listener) {
     }
 
     @Override

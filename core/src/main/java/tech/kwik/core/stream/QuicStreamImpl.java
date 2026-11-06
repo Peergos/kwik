@@ -18,6 +18,7 @@
  */
 package tech.kwik.core.stream;
 
+import tech.kwik.core.StreamListener;
 import tech.kwik.core.QuicConstants;
 import tech.kwik.core.QuicStream;
 import tech.kwik.core.frame.StreamFrame;
@@ -28,6 +29,11 @@ import tech.kwik.core.impl.Version;
 import tech.kwik.core.log.Logger;
 import tech.kwik.core.log.NullLogger;
 
+import java.util.function.Consumer;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.ExecutorService;
+import java.nio.ByteBuffer;
+import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.util.concurrent.locks.ReentrantLock;
@@ -46,6 +52,9 @@ public class QuicStreamImpl implements QuicStream {
     private volatile boolean outputClosed;
     private volatile boolean inputClosed;
     private final ReentrantLock stateLock;
+    private volatile StreamListener streamListener;
+    private final AtomicBoolean readablePending = new AtomicBoolean();
+    private final AtomicBoolean writablePending = new AtomicBoolean();
 
 
     public QuicConnectionImpl getConnectionImpl() {
@@ -187,6 +196,60 @@ public class QuicStreamImpl implements QuicStream {
     @Override
     public void resetStreamAt(long errorCode) {
         outputStream.resetReliable(errorCode);
+    }
+
+    @Override
+    public int read(ByteBuffer buffer) throws IOException {
+        return inputStream.readNonBlocking(buffer);
+    }
+
+    @Override
+    public int write(ByteBuffer data, boolean fin) throws IOException {
+        return outputStream.writeNonBlocking(data, fin);
+    }
+
+    @Override
+    public int writeCapacity() {
+        return outputStream.writeCapacity();
+    }
+
+    /**
+     * Notifications are posted to the callback executor rather than made inline, because they happen while kwik
+     * processes a packet or assembles one, and a listener that reads or writes there would re-enter it. At most one of
+     * each kind is pending.
+     */
+    @Override
+    public void setStreamListener(StreamListener listener) {
+        streamListener = listener;
+        inputStream.setReadListener(listener == null? null: () -> post(readablePending, l -> l.readable(this)));
+        outputStream.setWriteListener(listener == null? null: () -> post(writablePending, l -> l.writable(this)));
+    }
+
+    private void post(AtomicBoolean pending, Consumer<StreamListener> notification) {
+        if (! pending.compareAndSet(false, true)) {
+            return;
+        }
+        Runnable task = () -> {
+            pending.set(false);
+            StreamListener listener = streamListener;
+            if (listener != null) {
+                notification.accept(listener);
+            }
+        };
+        ExecutorService executor = streamManager != null? streamManager.getCallbackExecutor(): null;
+        if (executor != null) {
+            executor.execute(task);
+        }
+        else {
+            task.run();
+        }
+    }
+
+    /**
+     * The peer sent STOP_SENDING for this stream.
+     */
+    void peerStoppedSending(long errorCode) {
+        outputStream.peerStoppedSending(errorCode);
     }
 
     @Override

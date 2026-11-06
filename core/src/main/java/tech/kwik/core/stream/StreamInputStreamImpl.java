@@ -19,6 +19,7 @@
 package tech.kwik.core.stream;
 
 import tech.kwik.core.StreamClosedException;
+import tech.kwik.core.StreamResetException;
 import tech.kwik.core.frame.MaxStreamDataFrame;
 import tech.kwik.core.frame.QuicFrame;
 import tech.kwik.core.frame.StopSendingFrame;
@@ -70,6 +71,10 @@ class StreamInputStreamImpl extends StreamInputStream {
     // "... a variant of stream resets that reliably delivers the beginning of a stream up to a sender-specified offset, communicated using the RESET_STREAM_AT frame."
     private volatile boolean resetAt;
     private volatile long resetAtReliableSize;
+    private volatile long resetErrorCode;
+    private volatile Runnable readListener;
+    // Whether the non-blocking read reported the end of the stream already; guarded by addMonitor
+    private boolean endReported;
 
     public StreamInputStreamImpl(QuicStreamImpl quicStream, long receiveBufferSize, Logger log) {
         this.quicStream = quicStream;
@@ -107,13 +112,14 @@ class StreamInputStreamImpl extends StreamInputStream {
         }
 
         if (!aborted && !closed && !reset) {
+            long largestOffsetIncrease;
             synchronized (addMonitor) {
                 if (frame.getUpToOffset() > receiverFlowControlLimit) {
                     log.error("Flow control error on stream " + quicStream.streamId + ": frame up to offset " + frame.getUpToOffset() + " exceeds flow control limit " + receiverFlowControlLimit);
                     throw new TransportError(FLOW_CONTROL_ERROR);
                 }
                 receiveBuffer.add(frame);
-                long largestOffsetIncrease = Long.max(0, frame.getUpToOffset() - largestOffsetReceived);
+                largestOffsetIncrease = Long.max(0, frame.getUpToOffset() - largestOffsetReceived);
                 largestOffsetReceived = Long.max(largestOffsetReceived, frame.getUpToOffset());
                 if (readerWaiting) {
                     // Once per batch of received datagrams rather than per packet.
@@ -122,8 +128,9 @@ class StreamInputStreamImpl extends StreamInputStream {
                         addMonitor.notifyAll();
                     }
                 }
-                return largestOffsetIncrease;
             }
+            notifyReadListener();
+            return largestOffsetIncrease;
         }
         else {
             return 0;
@@ -313,6 +320,7 @@ class StreamInputStreamImpl extends StreamInputStream {
             finalSize = finalSizeOfReset;
         }
         if (!aborted && !closed && !reset) {
+            resetErrorCode = errorCode;
             reset = true;
             // Determine number of bytes that will not be read by the application (due to the reset), but that do occupy space in the flow control window.
             long unusedFlowControlCredits = finalSize - receiveBuffer.readOffset();
@@ -320,6 +328,7 @@ class StreamInputStreamImpl extends StreamInputStream {
             interruptBlockingReader();
             quicStream.inputClosed();
             quicStream.updateConnectionFlowControl(unusedFlowControlCredits);
+            notifyReadListener();
         }
         return increment;
     }
@@ -351,6 +360,7 @@ class StreamInputStreamImpl extends StreamInputStream {
             //  data up the lower Reliable Size to the application. "
             if (!resetAt || reliableSize < resetAtReliableSize) {
                 resetAtReliableSize = reliableSize;
+                resetErrorCode = errorCode;
                 resetAt = true;
             }
 
@@ -370,6 +380,7 @@ class StreamInputStreamImpl extends StreamInputStream {
                 interruptBlockingReader();
                 quicStream.inputClosed();
             }
+            notifyReadListener();
         }
         return largestOffsetIncrement;
     }
@@ -377,6 +388,52 @@ class StreamInputStreamImpl extends StreamInputStream {
     void abort() {
         aborted = true;
         interruptBlockingReader();
+        notifyReadListener();
+    }
+
+    @Override
+    int readNonBlocking(ByteBuffer buffer) throws IOException {
+        if (aborted) {
+            throw new StreamClosedException("Connection closed");
+        }
+        if (reset) {
+            throw new StreamResetException(resetErrorCode);
+        }
+        if (closed) {
+            throw new StreamClosedException("Stream closed");
+        }
+        synchronized (addMonitor) {
+            int bytesRead = receiveBuffer.read(buffer);
+            if (bytesRead > 0) {
+                updateAllowedFlowControl(bytesRead);
+                if (resetAt && !reset && receiveBuffer.readOffset() >= resetAtReliableSize) {
+                    // All reliable data has been delivered; the next read reports the reset.
+                    reset = true;
+                    quicStream.inputClosed();
+                }
+                return bytesRead;
+            }
+            if (bytesRead < 0) {
+                if (! endReported) {
+                    endReported = true;
+                    allDataRead();
+                }
+                return -1;
+            }
+            return 0;
+        }
+    }
+
+    @Override
+    void setReadListener(Runnable listener) {
+        readListener = listener;
+    }
+
+    private void notifyReadListener() {
+        Runnable listener = readListener;
+        if (listener != null) {
+            listener.run();
+        }
     }
 
     private void interruptBlockingReader() {

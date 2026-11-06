@@ -18,6 +18,7 @@
  */
 package tech.kwik.core.stream;
 
+import java.nio.ByteBuffer;
 import java.io.IOException;
 
 public class NullStreamOutputStream extends StreamOutputStream {
@@ -44,6 +45,24 @@ public class NullStreamOutputStream extends StreamOutputStream {
 
     @Override
     void abort() {
+    }
+
+    @Override
+    int writeNonBlocking(ByteBuffer data, boolean fin) throws IOException {
+        throw new IOException("Stream is not writable");
+    }
+
+    @Override
+    int writeCapacity() {
+        return 0;
+    }
+
+    @Override
+    void setWriteListener(Runnable listener) {
+    }
+
+    @Override
+    void peerStoppedSending(long errorCode) {
     }
 
     @Override

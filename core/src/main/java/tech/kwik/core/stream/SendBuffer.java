@@ -46,6 +46,9 @@ public class SendBuffer {
     private volatile Thread blockingWriterThread;
     // The free space a blocked writer waits for: at least half the buffer, so it isn't woken for every frame sent.
     private volatile int awaitedSpace;
+    // For non-blocking writers: notified when space becomes available after an offer did not take all data
+    private volatile Runnable spaceListener;
+    private volatile boolean spaceWanted;
 
 
     public SendBuffer(Integer sendBufferSize) {
@@ -99,6 +102,52 @@ public class SendBuffer {
 
         sendQueue.add(ByteBuffer.wrap(Arrays.copyOfRange(data, off, off + len)));
         bufferedBytes.getAndAdd(len);
+    }
+
+    /**
+     * Takes as much of the data as fits, without blocking; makes a copy.
+     * @return the number of bytes taken
+     */
+    public int offer(ByteBuffer data) {
+        int space = maxBufferSize - bufferedBytes.get();
+        int len = Integer.min(space, data.remaining());
+        if (len > 0) {
+            byte[] copy = new byte[len];
+            data.get(copy);
+            sendQueue.add(ByteBuffer.wrap(copy));
+            bufferedBytes.getAndAdd(len);
+        }
+        if (data.hasRemaining()) {
+            spaceWanted = true;
+            // Space may have been freed between computing it and setting the flag
+            if (maxBufferSize - bufferedBytes.get() >= maxBufferSize / 2) {
+                notifySpaceListener();
+            }
+        }
+        return len;
+    }
+
+    public int freeSpace() {
+        return Integer.max(0, maxBufferSize - bufferedBytes.get());
+    }
+
+    /**
+     * Notifies a non-blocking writer that waits for space, e.g. because the stream can no longer be written to.
+     */
+    public void wakeNonBlockingWriter() {
+        notifySpaceListener();
+    }
+
+    public void setSpaceListener(Runnable listener) {
+        spaceListener = listener;
+    }
+
+    private void notifySpaceListener() {
+        Runnable listener = spaceListener;
+        if (spaceWanted && listener != null) {
+            spaceWanted = false;
+            listener.run();
+        }
     }
 
     public StreamFrame getStreamFrame(Version quicVersion, int streamId, long currentOffset, int maxBytesToSend) {
@@ -156,6 +205,10 @@ public class SendBuffer {
 
     private void dataTaken(int bytes) {
         int buffered = bufferedBytes.addAndGet(-1 * bytes);
+        // Like a blocking writer, a non-blocking one waits for half the buffer, so it is not woken for every frame sent
+        if (spaceWanted && maxBufferSize - buffered >= maxBufferSize / 2) {
+            notifySpaceListener();
+        }
         if (blockingWriterThread != null && maxBufferSize - buffered >= awaitedSpace) {
             bufferLock.lock();
             try {
@@ -182,6 +235,7 @@ public class SendBuffer {
     public void clear() {
         sendQueue.clear();
         bufferedBytes.set(0);
+        notifySpaceListener();
         bufferLock.lock();
         try {
             notFull.signal();
