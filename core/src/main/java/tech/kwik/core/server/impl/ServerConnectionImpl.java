@@ -31,6 +31,7 @@ import tech.kwik.agent15.engine.TlsStatusEventHandler;
 import tech.kwik.agent15.extension.ApplicationLayerProtocolNegotiationExtension;
 import tech.kwik.agent15.extension.Extension;
 import tech.kwik.agent15.handshake.*;
+import tech.kwik.core.socket.DatagramSender;
 import tech.kwik.core.concurrent.ConnectionExecutor;
 import tech.kwik.core.ConnectionEstablishedEvent;
 import tech.kwik.core.QuicStream;
@@ -141,6 +142,18 @@ public class ServerConnectionImpl extends QuicConnectionImpl implements ServerCo
                                 ServerConnectionConfig configuration, ApplicationProtocolRegistry applicationProtocolRegistry,
                                 ServerConnectionRegistry connectionRegistry, Consumer<ServerConnectionImpl> closeCallback,
                                 ConnectionExecutor connectionExecutor, Logger log) {
+        this(originalVersion, DatagramSender.of(serverSocket), initialClientAddress, peerCid, originalDcid, cryptoStream, tlsServerEngineFactory,
+                configuration, applicationProtocolRegistry, connectionRegistry, closeCallback, connectionExecutor, log);
+    }
+
+    /**
+     * @param datagramSender  sends the connection's datagrams: the server socket, or the caller that does the I/O
+     */
+    public ServerConnectionImpl(Version originalVersion, DatagramSender datagramSender, InetSocketAddress initialClientAddress,
+                                byte[] peerCid, byte[] originalDcid, CryptoStream cryptoStream, TlsServerEngineFactory tlsServerEngineFactory,
+                                ServerConnectionConfig configuration, ApplicationProtocolRegistry applicationProtocolRegistry,
+                                ServerConnectionRegistry connectionRegistry, Consumer<ServerConnectionImpl> closeCallback,
+                                ConnectionExecutor connectionExecutor, Logger log) {
         super(originalVersion, Role.Server, null, configuration, Bytes.bytesToHex(originalDcid), connectionExecutor, new LogProxy(log, originalDcid));
         this.originalVersion = originalVersion;
         this.initialClientAddress = initialClientAddress;
@@ -167,7 +180,7 @@ public class ServerConnectionImpl extends QuicConnectionImpl implements ServerCo
         connectionIdManager.registerClientAddress(initialClientAddress);
 
         idleTimer = new IdleTimer(this, getConnectionExecutor(), log);
-        socketManager = new ServerConnectionSocketManager(serverSocket, initialClientAddress);
+        socketManager = new ServerConnectionSocketManager(datagramSender, initialClientAddress);
         sender = new SenderImpl(quicVersion, getMaxPacketSize(), socketManager, this, Bytes.bytesToHex(originalDcid), configuration.initialRtt(), this.log);
         connectionIdManager.setSender(sender);
 

@@ -20,6 +20,7 @@ package tech.kwik.core.server.impl;
 
 import tech.kwik.agent15.TlsConstants;
 import tech.kwik.agent15.engine.TlsServerEngineFactory;
+import tech.kwik.core.socket.DatagramSender;
 import tech.kwik.core.concurrent.ConnectionExecutor;
 import tech.kwik.core.QuicConnection;
 import tech.kwik.core.QuicConstants;
@@ -86,7 +87,9 @@ public class ServerConnectorImpl implements ServerConnector {
     private final Logger log;
     private final List<QuicConnection.QuicVersion> supportedVersions;
     private final List<Integer> supportedVersionIds;
+    // Null when the caller does the I/O, see receive()
     private final DatagramSocket serverSocket;
+    private final DatagramSender sender;
     // Client connections sharing this connector's socket, by (each of) their connection IDs.
     private final Map<ByteBuffer, Consumer<RawPacket>> clientConnections = new ConcurrentHashMap<>();
     private final SharedEndpoint sharedEndpoint = new SharedEndpointImpl();
@@ -94,7 +97,7 @@ public class ServerConnectorImpl implements ServerConnector {
     private final ServerConnectionFactory serverConnectionFactory;
     private ApplicationProtocolRegistry applicationProtocolRegistry;
     private final ExecutorService sharedExecutor;
-    private final ScheduledThreadPoolExecutor sharedScheduledExecutor;
+    private final ScheduledExecutorService sharedScheduledExecutor;
     private final Context context;
     private final ServerConnectionRegistryImpl connectionRegistry;
     private final int connectionIdLength;
@@ -145,7 +148,17 @@ public class ServerConnectorImpl implements ServerConnector {
 
     private ServerConnectorImpl(DatagramSocket socket, TlsServerEngineFactory tlsEngineFactory, List<QuicConnection.QuicVersion> supportedVersions,
                                 ServerConnectionConfig configuration, ConnectionExecutor connectionExecutor, Logger log) {
+        this(socket, DatagramSender.of(socket), tlsEngineFactory, supportedVersions, configuration, connectionExecutor, log);
+    }
+
+    /**
+     * @param socket  the socket to receive on, or null when the caller does the I/O (then sending is done with sender)
+     */
+    private ServerConnectorImpl(DatagramSocket socket, DatagramSender sender, TlsServerEngineFactory tlsEngineFactory,
+                                List<QuicConnection.QuicVersion> supportedVersions, ServerConnectionConfig configuration,
+                                ConnectionExecutor connectionExecutor, Logger log) {
         this.serverSocket = socket;
+        this.sender = sender;
         this.tlsEngineFactory = tlsEngineFactory;
         this.supportedVersions = supportedVersions;
         this.log = Objects.requireNonNull(log);
@@ -153,21 +166,24 @@ public class ServerConnectorImpl implements ServerConnector {
 
         applicationProtocolRegistry = new ApplicationProtocolRegistry();
         connectionRegistry = new ServerConnectionRegistryImpl(log);
-        serverConnectionFactory = new ServerConnectionFactory(serverSocket, tlsEngineFactory,
+        serverConnectionFactory = new ServerConnectionFactory(sender, tlsEngineFactory,
                 configuration, applicationProtocolRegistry, connectionRegistry, this::closed, connectionExecutor, log);
 
         supportedVersionIds = supportedVersions.stream()
                 .map(Version::of)
                 .map(Version::getId)
                 .collect(Collectors.toList());
-        receiver = new FixedAddressReceiver(serverSocket, log, exception -> close(), this::processReceived);
+        receiver = socket != null? new FixedAddressReceiver(serverSocket, log, exception -> close(), this::processReceived): null;
 
         int maxSharedExecutorThreads = 10;
-        sharedExecutor = new ThreadPoolExecutor(1, maxSharedExecutorThreads, 60L, TimeUnit.SECONDS,
+        sharedExecutor = connectionExecutor.executor(() -> new ThreadPoolExecutor(1, maxSharedExecutorThreads, 60L, TimeUnit.SECONDS,
                 new LinkedBlockingQueue<Runnable>(), new DaemonThreadFactory("server connector shared executor"),
-                new ThreadPoolExecutor.DiscardPolicy());
-        sharedScheduledExecutor = new ScheduledThreadPoolExecutor(1);
-        sharedScheduledExecutor.setRejectedExecutionHandler(new ThreadPoolExecutor.DiscardPolicy());
+                new ThreadPoolExecutor.DiscardPolicy()));
+        sharedScheduledExecutor = connectionExecutor.scheduler(() -> {
+            ScheduledThreadPoolExecutor executor = new ScheduledThreadPoolExecutor(1);
+            executor.setRejectedExecutionHandler(new ThreadPoolExecutor.DiscardPolicy());
+            return executor;
+        });
         context = new ServerConnectorContext();
 
         new MemoryWatcher(85, log);
@@ -205,8 +221,10 @@ public class ServerConnectorImpl implements ServerConnector {
     @Override
     public void start() {
         acceptingNewConnections = true;
-        receiver.start();
-        log.info("Kwik server connector started on port " + serverSocket.getLocalPort() + "; supported application protocols: "
+        if (receiver != null) {
+            receiver.start();
+        }
+        log.info("Kwik server connector started on port " + localPort() + "; supported application protocols: "
                 + applicationProtocolRegistry.getRegisteredApplicationProtocols());
     }
 
@@ -274,27 +292,22 @@ public class ServerConnectorImpl implements ServerConnector {
 
         @Override
         public InetSocketAddress getLocalAddress() {
-            return (InetSocketAddress) serverSocket.getLocalSocketAddress();
+            return sender.getLocalAddress();
         }
 
         @Override
         public Instant send(ByteBuffer data, InetSocketAddress destination) throws IOException {
-            DatagramPacket datagram = new DatagramPacket(data.array(), data.limit(), destination.getAddress(), destination.getPort());
-            Instant timeSent = Instant.now();
-            serverSocket.send(datagram);
-            return timeSent;
+            return sender.send(data, destination);
         }
 
         @Override
         public int maxSegments() {
-            return serverSocket instanceof SegmentedDatagramSocket ? ((SegmentedDatagramSocket) serverSocket).maxSegments() : 1;
+            return sender.maxSegments();
         }
 
         @Override
         public Instant sendSegmented(byte[] data, int length, int segmentSize, InetSocketAddress destination) throws IOException {
-            Instant timeSent = Instant.now();
-            ((SegmentedDatagramSocket) serverSocket).sendSegmented(data, 0, length, segmentSize, destination);
-            return timeSent;
+            return sender.sendSegmented(data, length, segmentSize, destination);
         }
 
         @Override
@@ -520,9 +533,8 @@ public class ServerConnectorImpl implements ServerConnector {
      */
     private void sendPacket(InetSocketAddress clientAddress, QuicPacket packet, Aead aead) {
         byte[] packetBytes = packet.generatePacketBytes(aead);
-        DatagramPacket datagram = new DatagramPacket(packetBytes, packetBytes.length, clientAddress.getAddress(), clientAddress.getPort());
         try {
-            serverSocket.send(datagram);
+            sender.send(ByteBuffer.wrap(packetBytes), clientAddress);
             log.sent(Instant.now(), packet);
         }
         catch (IOException e) {
@@ -551,8 +563,12 @@ public class ServerConnectorImpl implements ServerConnector {
         closeAllConnections();
         connectionRegistry.waitForAllConnectionsToClose(timeout);
 
-        receiver.shutdown();
-        serverSocket.close();
+        if (receiver != null) {
+            receiver.shutdown();
+        }
+        if (serverSocket != null) {
+            serverSocket.close();
+        }
         tlsEngineFactory.dispose();
         sharedExecutor.shutdown();
         sharedScheduledExecutor.shutdown();
@@ -561,7 +577,24 @@ public class ServerConnectorImpl implements ServerConnector {
 
     @Override
     public String toString() {
-        return "ServerConnector[" + serverSocket.getLocalPort() + ":" + applicationProtocolRegistry.getRegisteredApplicationProtocols() + "]";
+        return "ServerConnector[" + localPort() + ":" + applicationProtocolRegistry.getRegisteredApplicationProtocols() + "]";
+    }
+
+    private int localPort() {
+        InetSocketAddress local = sender.getLocalAddress();
+        return local != null? local.getPort(): -1;
+    }
+
+    @Override
+    public void receive(ByteBuffer datagram, InetSocketAddress source) {
+        if (serverSocket != null) {
+            throw new IllegalStateException("connector receives on its own socket");
+        }
+        // Copied, because kwik keeps references to received data (e.g. in stream frames) and the caller may reuse its buffer
+        byte[] data = new byte[datagram.remaining()];
+        datagram.get(data);
+        DatagramPacket packet = new DatagramPacket(data, data.length, source);
+        processReceived(new RawPacket(packet, Instant.now(), sender.getLocalAddress()));
     }
 
     private class ServerConnectorContext implements Context {
@@ -593,6 +626,7 @@ public class ServerConnectorImpl implements ServerConnector {
         private KeyPair rawPublicKey;
         private Predicate<PublicKey> clientRawPublicKeyVerifier;
         private ConnectionExecutor connectionExecutor = ConnectionExecutor.threaded();
+        private DatagramSender datagramSender;
 
         @Override
         public ServerConnector.Builder withPort(int port) {
@@ -677,6 +711,12 @@ public class ServerConnectorImpl implements ServerConnector {
         }
 
         @Override
+        public ServerConnector.Builder withDatagramSender(DatagramSender sender) {
+            this.datagramSender = Objects.requireNonNull(sender);
+            return this;
+        }
+
+        @Override
         public ServerConnector.Builder withConnectionExecutor(ScheduledExecutorService executor) {
             this.connectionExecutor = ConnectionExecutor.shared(executor);
             return this;
@@ -684,14 +724,17 @@ public class ServerConnectorImpl implements ServerConnector {
 
         @Override
         public ServerConnector build() throws SocketException, CertificateException {
-            if (socket == null && port == 0) {
+            if (datagramSender != null && (socket != null || port != 0)) {
+                throw new IllegalStateException("with a datagram sender, the caller does the I/O, so there is no port or socket");
+            }
+            if (datagramSender == null && socket == null && port == 0) {
                 throw new IllegalStateException("port number not set");
             }
             if (certificateFile == null && keyStore == null && rawPublicKey == null) {
                 throw new IllegalStateException("server certificate not set");
             }
 
-            if (socket == null) {
+            if (socket == null && datagramSender == null) {
                 socket = new DatagramSocket(port);
             }
 
@@ -708,6 +751,9 @@ public class ServerConnectorImpl implements ServerConnector {
                 }
                 if (clientRawPublicKeyVerifier != null) {
                     tlsEngineFactory.requireClientRawPublicKey(clientRawPublicKeyVerifier, List.of(TlsConstants.SignatureScheme.ed25519));
+                }
+                if (datagramSender != null) {
+                    return new ServerConnectorImpl(null, datagramSender, tlsEngineFactory, supportedVersions, configuration, connectionExecutor, log);
                 }
                 return new ServerConnectorImpl(socket, tlsEngineFactory, supportedVersions, configuration, connectionExecutor, log);
             }

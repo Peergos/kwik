@@ -143,10 +143,6 @@ public interface QuicStream {
     }
 
     /**
-     * @deprecated use {@link #abortReading(long)} instead
-     * @param applicationProtocolErrorCode
-     */
-    /**
      * Reads what is available without blocking, for use instead of {@link #getInputStream()}, e.g. on an event loop.
      * @return the number of bytes read; 0 when none are available yet, -1 at the end of the stream (once all data,
      * including the FIN, has been received and read)
@@ -182,6 +178,10 @@ public interface QuicStream {
         throw new UnsupportedOperationException();
     }
 
+    /**
+     * @deprecated use {@link #abortReading(long)} instead
+     * @param applicationProtocolErrorCode
+     */
     @Deprecated
     default void closeInput(long applicationProtocolErrorCode) {
         abortReading(applicationProtocolErrorCode);

@@ -54,6 +54,13 @@ public interface ServerConnector extends AutoCloseable {
     void start();
 
     /**
+     * Processes a datagram the caller received, for a connector built with
+     * {@link Builder#withDatagramSender(tech.kwik.core.socket.DatagramSender)}; the data is copied. With a shared
+     * executor (see {@link Builder#withConnectionExecutor}), call it on that executor.
+     */
+    void receive(java.nio.ByteBuffer datagram, java.net.InetSocketAddress source);
+
+    /**
      * Returns this connector's socket as an endpoint that client connections can share, see
      * {@link tech.kwik.core.QuicClientConnection.Builder#sharedEndpoint}.
      */
@@ -124,6 +131,13 @@ public interface ServerConnector extends AutoCloseable {
          * on threads of their own.
          */
         Builder withConnectionExecutor(ScheduledExecutorService executor);
+
+        /**
+         * Sends through the given sender instead of a socket of the connector's own: the caller does the I/O, and hands
+         * received datagrams to {@link ServerConnector#receive}. There is then no port or socket to set, and the
+         * connector starts no receiver thread.
+         */
+        Builder withDatagramSender(tech.kwik.core.socket.DatagramSender sender);
 
         /**
          * Builds the server connector.

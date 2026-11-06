@@ -19,11 +19,9 @@
 package tech.kwik.core.socket;
 
 import java.io.IOException;
-import java.net.DatagramPacket;
 import java.net.DatagramSocket;
 import java.net.InetSocketAddress;
 import java.nio.ByteBuffer;
-import java.time.Clock;
 import java.time.Instant;
 
 /**
@@ -31,14 +29,16 @@ import java.time.Instant;
  */
 public class ServerConnectionSocketManager implements SocketManager {
 
-    private final DatagramSocket serverSocket;
+    private final DatagramSender sender;
     private volatile InetSocketAddress clientAddress;
-    private final Clock clock;
 
     public ServerConnectionSocketManager(DatagramSocket serverSocket, InetSocketAddress initialClientAddress) {
-        this.serverSocket = serverSocket;
+        this(DatagramSender.of(serverSocket), initialClientAddress);
+    }
+
+    public ServerConnectionSocketManager(DatagramSender sender, InetSocketAddress initialClientAddress) {
+        this.sender = sender;
         this.clientAddress = initialClientAddress;
-        this.clock = Clock.systemUTC();
     }
 
     public Instant send(ByteBuffer data) throws IOException {
@@ -47,25 +47,20 @@ public class ServerConnectionSocketManager implements SocketManager {
 
     @Override
     public Instant send(ByteBuffer data, InetSocketAddress clientAddress) throws IOException {
-        DatagramPacket datagram = new DatagramPacket(data.array(), data.limit(), clientAddress.getAddress(), clientAddress.getPort());
-        Instant timeSent = clock.instant();
-        serverSocket.send(datagram);
-        return timeSent;
+        return sender.send(data, clientAddress);
     }
 
     @Override
     public int maxSegments() {
-        return serverSocket instanceof SegmentedDatagramSocket ? ((SegmentedDatagramSocket) serverSocket).maxSegments() : 1;
+        return sender.maxSegments();
     }
 
     @Override
     public Instant sendSegmented(byte[] data, int length, int segmentSize, InetSocketAddress clientAddress) throws IOException {
-        if (!(serverSocket instanceof SegmentedDatagramSocket)) {
+        if (sender.maxSegments() <= 1) {
             return SocketManager.super.sendSegmented(data, length, segmentSize, clientAddress);
         }
-        Instant timeSent = clock.instant();
-        ((SegmentedDatagramSocket) serverSocket).sendSegmented(data, 0, length, segmentSize, clientAddress);
-        return timeSent;
+        return sender.sendSegmented(data, length, segmentSize, clientAddress);
     }
 
     @Override

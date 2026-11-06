@@ -356,7 +356,25 @@ public class StreamManager {
 
             flowControlMax += size;  // Will not overflow, because receiving Long.MAX_VALUE bytes would take years.
             if (flowControlMax - flowControlLastAdvertised > flowControlIncrement) {
-                connection.send(new MaxDataFrame(flowControlMax), f -> {}, true);
+                connection.send(new MaxDataFrame(flowControlMax), this::retransmitMaxData, true);
+                flowControlLastAdvertised = flowControlMax;
+            }
+        }
+        finally {
+            updateFlowControlLock.unlock();
+        }
+    }
+
+    /**
+     * https://www.rfc-editor.org/rfc/rfc9000.html#section-13.3
+     * "An updated value is sent in a MAX_DATA frame if the packet containing the most recently sent MAX_DATA frame is
+     *  declared lost (...)". Without it, a sender blocked on the connection limit waits for an update that never comes.
+     */
+    private void retransmitMaxData(QuicFrame lostFrame) {
+        try {
+            updateFlowControlLock.lock();
+            if (((MaxDataFrame) lostFrame).getMaxData() == flowControlLastAdvertised) {
+                connection.send(new MaxDataFrame(flowControlMax), this::retransmitMaxData, true);
                 flowControlLastAdvertised = flowControlMax;
             }
         }

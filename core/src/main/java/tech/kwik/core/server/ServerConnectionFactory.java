@@ -19,6 +19,7 @@
 package tech.kwik.core.server;
 
 import tech.kwik.agent15.engine.TlsServerEngineFactory;
+import tech.kwik.core.socket.DatagramSender;
 import tech.kwik.core.concurrent.ConnectionExecutor;
 import tech.kwik.core.crypto.CryptoStream;
 import tech.kwik.core.impl.Version;
@@ -46,7 +47,7 @@ public class ServerConnectionFactory {
     private final Logger log;
     private final TlsServerEngineFactory tlsServerEngineFactory;
     private final ApplicationProtocolRegistry applicationProtocolRegistry;
-    private final DatagramSocket serverSocket;
+    private final DatagramSender sender;
     private final Consumer<ServerConnectionImpl> closeCallback;
     private final ServerConnectionRegistry connectionRegistry;
     private final ServerConnectionConfig configuration;
@@ -65,6 +66,15 @@ public class ServerConnectionFactory {
                                    ServerConnectionRegistry connectionRegistry, Consumer<ServerConnectionImpl> closeCallback,
                                    ConnectionExecutor connectionExecutor, Logger log)
     {
+        this(DatagramSender.of(serverSocket), tlsServerEngineFactory, configuration, applicationProtocolRegistry, connectionRegistry,
+                closeCallback, connectionExecutor, log);
+    }
+
+    public ServerConnectionFactory(DatagramSender sender, TlsServerEngineFactory tlsServerEngineFactory,
+                                   ServerConnectionConfig configuration, ApplicationProtocolRegistry applicationProtocolRegistry,
+                                   ServerConnectionRegistry connectionRegistry, Consumer<ServerConnectionImpl> closeCallback,
+                                   ConnectionExecutor connectionExecutor, Logger log)
+    {
         this.connectionExecutor = connectionExecutor;
         if (configuration.connectionIdLength() > MAXIMUM_CONNECTION_ID_LENGTH || configuration.connectionIdLength() < MINIMUM_CONNECTION_ID_LENGTH) {
             throw new IllegalArgumentException();
@@ -75,7 +85,7 @@ public class ServerConnectionFactory {
         this.connectionRegistry = connectionRegistry;
         this.closeCallback = closeCallback;
         this.log = log;
-        this.serverSocket = serverSocket;
+        this.sender = sender;
     }
 
     /**
@@ -89,7 +99,7 @@ public class ServerConnectionFactory {
      * @return
      */
     public ServerConnectionImpl createNewConnection(Version version, InetSocketAddress clientAddress, byte[] scid, byte[] originalDcid, CryptoStream cryptoStream) {
-        ServerConnectionImpl connection = new ServerConnectionImpl(version, serverSocket, clientAddress, scid, originalDcid, cryptoStream,
+        ServerConnectionImpl connection = new ServerConnectionImpl(version, sender, clientAddress, scid, originalDcid, cryptoStream,
                 tlsServerEngineFactory, configuration, applicationProtocolRegistry, connectionRegistry, closeCallback, connectionExecutor, log);
 
         log.info("Creating new connection with version " + version + " for odcid " + Bytes.bytesToHex(originalDcid)

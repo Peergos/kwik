@@ -26,8 +26,8 @@ import tech.kwik.core.server.ApplicationProtocolConnection;
 import tech.kwik.core.server.ApplicationProtocolConnectionFactory;
 import tech.kwik.core.server.ServerConnectionConfig;
 import tech.kwik.core.server.ServerConnector;
+import tech.kwik.core.test.NonBlockingEcho;
 
-import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.net.DatagramSocket;
 import java.net.InetAddress;
@@ -122,14 +122,14 @@ class NonBlockingStreamTest {
 
     @Test
     void echoesMoreDataThanTheBuffersHold() throws Exception {
-        serverStreamHandler = stream -> stream.setStreamListener(new Echo(stream));
+        serverStreamHandler = stream -> stream.setStreamListener(new NonBlockingEcho.Echo(stream));
         byte[] request = new byte[3 * 1024 * 1024];
         new Random(1).nextBytes(request);
 
         CompletableFuture<byte[]> reply = new CompletableFuture<>();
         onLoop(() -> {
             QuicStream stream = client.createStream(true);
-            Exchange exchange = new Exchange(stream, request, reply);
+            NonBlockingEcho.Exchange exchange = new NonBlockingEcho.Exchange(stream, request, reply);
             stream.setStreamListener(exchange);
             exchange.writeMore();
             return null;
@@ -145,7 +145,7 @@ class NonBlockingStreamTest {
         CompletableFuture<byte[]> reply = new CompletableFuture<>();
         onLoop(() -> {
             QuicStream stream = client.createStream(true);
-            Exchange exchange = new Exchange(stream, new byte[10], reply);
+            NonBlockingEcho.Exchange exchange = new NonBlockingEcho.Exchange(stream, new byte[10], reply);
             stream.setStreamListener(exchange);
             exchange.writeMore();
             return null;
@@ -199,7 +199,7 @@ class NonBlockingStreamTest {
 
     @Test
     void nothingCanBeWrittenAfterFin() throws Exception {
-        serverStreamHandler = stream -> stream.setStreamListener(new Echo(stream));
+        serverStreamHandler = stream -> stream.setStreamListener(new NonBlockingEcho.Echo(stream));
 
         int capacityAfterFin = onLoop(() -> {
             QuicStream stream = client.createStream(true);
@@ -216,7 +216,7 @@ class NonBlockingStreamTest {
     @Test
     void listenerIsCalledOnTheSharedExecutor() throws Exception {
         CompletableFuture<Thread> notifiedOn = new CompletableFuture<>();
-        serverStreamHandler = stream -> stream.setStreamListener(new Echo(stream));
+        serverStreamHandler = stream -> stream.setStreamListener(new NonBlockingEcho.Echo(stream));
 
         onLoop(() -> {
             QuicStream stream = client.createStream(true);
@@ -246,102 +246,6 @@ class NonBlockingStreamTest {
                 throw (Exception) e.getCause();
             }
             throw e;
-        }
-    }
-
-    /**
-     * Server side: reads the whole request, then writes it back and ends the stream.
-     */
-    private static class Echo implements StreamListener {
-        private final QuicStream stream;
-        private final ByteArrayOutputStream received = new ByteArrayOutputStream();
-        private final ByteBuffer readBuffer = ByteBuffer.allocate(16 * 1024);
-        private ByteBuffer reply;
-
-        Echo(QuicStream stream) {
-            this.stream = stream;
-            // Data may have arrived before the listener was set
-            readable(stream);
-        }
-
-        @Override
-        public void readable(QuicStream s) {
-            try {
-                int read;
-                while (reply == null && (read = stream.read(readBuffer.clear())) != 0) {
-                    if (read < 0) {
-                        reply = ByteBuffer.wrap(received.toByteArray());
-                        writable(s);
-                        return;
-                    }
-                    received.write(readBuffer.array(), 0, read);
-                }
-            }
-            catch (IOException e) {
-                stream.resetStream(1);
-            }
-        }
-
-        @Override
-        public void writable(QuicStream s) {
-            try {
-                if (reply != null && reply.hasRemaining()) {
-                    stream.write(reply, true);
-                }
-            }
-            catch (IOException e) {
-                stream.resetStream(1);
-            }
-        }
-    }
-
-    /**
-     * Client side: writes the request with fin, and collects the reply.
-     */
-    private static class Exchange implements StreamListener {
-        private final QuicStream stream;
-        private final ByteBuffer request;
-        private final CompletableFuture<byte[]> reply;
-        private final ByteArrayOutputStream received = new ByteArrayOutputStream();
-        private final ByteBuffer readBuffer = ByteBuffer.allocate(16 * 1024);
-
-        Exchange(QuicStream stream, byte[] request, CompletableFuture<byte[]> reply) {
-            this.stream = stream;
-            this.request = ByteBuffer.wrap(request);
-            this.reply = reply;
-        }
-
-        void writeMore() throws IOException {
-            if (request.hasRemaining()) {
-                stream.write(request, true);
-            }
-        }
-
-        @Override
-        public void readable(QuicStream s) {
-            try {
-                int read;
-                while ((read = stream.read(readBuffer.clear())) != 0) {
-                    if (read < 0) {
-                        reply.complete(received.toByteArray());
-                        return;
-                    }
-                    received.write(readBuffer.array(), 0, read);
-                }
-            }
-            catch (IOException e) {
-                reply.completeExceptionally(e);
-            }
-        }
-
-        @Override
-        public void writable(QuicStream s) {
-            try {
-                writeMore();
-            }
-            catch (IOException e) {
-                reply.completeExceptionally(e);
-            }
         }
     }
 }
