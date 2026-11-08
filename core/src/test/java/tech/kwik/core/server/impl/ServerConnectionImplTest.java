@@ -472,6 +472,41 @@ class ServerConnectionImplTest {
     }
 
     @Test
+    void whenClientNeverAnswersRetryConnectionIsDiscardedAfterIdleTimeout() throws Exception {
+        // Given
+        connection = createServerConnection(createTlsServerEngine(), new byte[8], new byte[8], cid -> {}, null,
+                configurationBuilder(true).maxIdleTimeout(200).build());
+
+        // When
+        connection.process(new InitialPacket(Version.getDefault(), new byte[8], new byte[8], null, new CryptoFrame()), metaDataForNow());
+        verify(socketManager).send(argThat(this::isRetry), any(InetSocketAddress.class));
+
+        // Then
+        long deadline = System.currentTimeMillis() + 10_000;
+        while (!connection.isClosed() && System.currentTimeMillis() < deadline) {
+            Thread.sleep(50);
+        }
+        assertThat(connection.isClosed()).isTrue();
+    }
+
+    @Test
+    void connectionClosedWhileProcessingInitialIsTerminatedWhenDatagramIsProcessed() throws Exception {
+        // Given
+        connection = createServerConnection(createTlsServerEngine(), true, new byte[8]);
+        connection.process(new InitialPacket(Version.getDefault(), new byte[8], new byte[8], null, new CryptoFrame()), metaDataForNow());
+        byte[] retryToken = captureRetryToken(socketManager);
+        byte[] incorrectToken = Arrays.copyOfRange(retryToken, 0, retryToken.length - 1);
+        connection.process(new InitialPacket(Version.getDefault(), new byte[8], new byte[8], incorrectToken, new CryptoFrame()), mock(PacketMetaData.class));
+        assertThat(connection.isClosed()).isFalse();
+
+        // When
+        connection.datagramProcessed();
+
+        // Then
+        assertThat(connection.isClosed()).isTrue();
+    }
+
+    @Test
     void whenRetryIsRequiredSecondInitialShouldReturnSameRetryPacket() throws Exception {
         // Given
         byte[] odcid = { 0x0f, 0x0e, 0x0d, 0x0c, 0x0b, 0x0a, 0x09, 0x08 };
@@ -735,6 +770,10 @@ class ServerConnectionImplTest {
     }
 
     private ServerConnectionImpl createServerConnection(TlsServerEngineFactory tlsServerEngineFactory, boolean retryRequired, byte[] clientCid, byte[] odcid, Consumer<ServerConnectionImpl> closeCallback, CryptoStream cryptoStream) throws Exception {
+        return createServerConnection(tlsServerEngineFactory, clientCid, odcid, closeCallback, cryptoStream, getDefaultConfiguration(retryRequired));
+    }
+
+    private ServerConnectionImpl createServerConnection(TlsServerEngineFactory tlsServerEngineFactory, byte[] clientCid, byte[] odcid, Consumer<ServerConnectionImpl> closeCallback, CryptoStream cryptoStream, ServerConnectionConfig configuration) throws Exception {
         ApplicationProtocolRegistry applicationProtocolRegistry = new ApplicationProtocolRegistry();
         ApplicationProtocolConnectionFactory applicationProtocolConnectionFactory = mock(ApplicationProtocolConnectionFactory.class);
         when(applicationProtocolConnectionFactory.createConnection(anyString(), any(QuicConnection.class))).thenReturn(Mockito.mock(ApplicationProtocolConnection.class));
@@ -742,7 +781,7 @@ class ServerConnectionImplTest {
 
         ServerConnectionImpl connection = new ServerConnectionImpl(Version.getDefault(), mock(DatagramSocket.class),
                 new InetSocketAddress(InetAddress.getLoopbackAddress(), 6000), clientCid, odcid, cryptoStream,
-                tlsServerEngineFactory, getDefaultConfiguration(retryRequired),
+                tlsServerEngineFactory, configuration,
                 applicationProtocolRegistry, Mockito.mock(ServerConnectionRegistry.class), closeCallback, mock(Logger.class));
 
         SenderImpl sender = mock(SenderImpl.class);
@@ -754,6 +793,10 @@ class ServerConnectionImplTest {
     }
 
     private static ServerConnectionConfig getDefaultConfiguration(boolean retryRequired) {
+        return configurationBuilder(retryRequired).build();
+    }
+
+    private static ServerConnectionConfig.Builder configurationBuilder(boolean retryRequired) {
         return ServerConnectionConfig.builder()
                 .maxIdleTimeoutInSeconds(30)
                 .maxUnidirectionalStreamBufferSize(1_000_000)
@@ -762,8 +805,7 @@ class ServerConnectionImplTest {
                 .maxOpenPeerInitiatedUnidirectionalStreams(10)
                 .maxOpenPeerInitiatedBidirectionalStreams(100)
                 .retryRequired(retryRequired)
-                .connectionIdLength(8)
-                .build();
+                .connectionIdLength(8);
     }
 
     private TlsServerEngineFactory createTlsServerEngine() {

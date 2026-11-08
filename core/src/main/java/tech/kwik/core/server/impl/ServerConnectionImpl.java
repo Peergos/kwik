@@ -192,6 +192,9 @@ public class ServerConnectionImpl extends QuicConnectionImpl implements ServerCo
             sender.setAntiAmplificationLimit(0);
         }
         idleTimer.setPtoSupplier(sender::getPto);
+        // Armed before the peer's transport parameters arrive, so a connection whose handshake stalls (e.g. a client
+        // that never answers the Retry) is still discarded
+        determineIdleTimeout(configuration.maxIdleTimeout(), 0);
 
         if (bufferedInitialCrypto != null) {
             bufferedInitialCrypto.setTlsEngine(tlsEngine);

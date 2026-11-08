@@ -196,6 +196,11 @@ public class ServerConnectionThread implements ServerConnectionProxy {
             serverConnection.increaseAntiAmplificationLimit(-1 * data.remaining());
             datagramProcessingChain.processDatagram(data.slice(), firstInitialPacketMetaData);
         }
+        else {
+            // Runs the post-processing actions, such as the terminate() of a connection closed while processing the
+            // first datagram, which would otherwise wait for a datagram that may never come
+            serverConnection.datagramProcessed();
+        }
     }
 
     private void processDatagram(ReceivedDatagram datagram) throws TransportError {

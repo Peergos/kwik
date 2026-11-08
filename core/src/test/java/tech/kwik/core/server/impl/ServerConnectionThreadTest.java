@@ -89,6 +89,33 @@ class ServerConnectionThreadTest {
     }
 
     @Test
+    void firstDatagramWithoutRemainingDataIsMarkedProcessed() throws Exception {
+        // Given
+        PacketMetaData metaData = new PacketMetaData(Instant.now(), new InetSocketAddress(54221), 10, 1207);
+
+        // When
+        serverConnectionThread = new ServerConnectionThread(serverConnection, List.of(), ByteBuffer.allocate(0), metaData, mock(Logger.class));
+
+        // Then
+        verify(serverConnection, timeout(1000)).datagramProcessed();
+    }
+
+    @Test
+    void firstDatagramWithRemainingDataIsMarkedProcessedOnce() throws Exception {
+        // Given
+        PacketMetaData metaData = new PacketMetaData(Instant.now(), new InetSocketAddress(54221), 10, 1207);
+        ByteBuffer remainingData = ByteBuffer.allocate(1173);
+        remainingData.position(1100);
+
+        // When
+        serverConnectionThread = new ServerConnectionThread(serverConnection, List.of(), remainingData, metaData, mock(Logger.class));
+
+        // Then
+        verify(parser, timeout(1000)).parseAndProcessPackets(any(ByteBuffer.class), any(PacketMetaData.class));
+        verify(serverConnection, after(200).times(1)).datagramProcessed();
+    }
+
+    @Test
     void testRemainingDatagramDataShouldNotIncreaseAntiAmplificationLimit() throws Exception {
         // Given
         AtomicInteger antiAmplificationLimit = new AtomicInteger(0);
